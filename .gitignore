@@ -1,0 +1,18 @@
+# Rust
+/target
+/python/target
+Cargo.lock
+
+# Local configuration and credentials. Only the *.example* / schema files are tracked.
+.env
+.env*
+!.env.example
+/scripts
+
+# Python package (built by maturin; see python/README.md)
+/python/distlock/_native*.so
+/python/distlock/_native*.pyd
+/python/.venv
+__pycache__/
+*.egg-info/
+.pytest_cache/

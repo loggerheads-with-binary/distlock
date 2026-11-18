@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "distlock users file",
+  "description": "Credentials for clients of the distlock server. A user's client_id is the application name that appears on every session it opens. Not expressible in this schema but enforced by the server at load time: client_id values must be unique (case-sensitive), and the file should not be readable by group or others.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "users"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Editor hint only; ignored by the server."
+    },
+    "description": {
+      "type": "string",
+      "description": "Free-form note for humans; ignored by the server."
+    },
+    "version": {
+      "const": 1,
+      "description": "Format version of this file."
+    },
+    "users": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/user" }
+    }
+  },
+  "$defs": {
+    "user": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["client_id", "password_hash"],
+      "properties": {
+        "client_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+          "description": "Application name and login name. Many processes may share one client_id; each opens its own session."
+        },
+        "password_hash": {
+          "type": "string",
+          "pattern": "^\\$2[aby]\\$(1[0-9]|2[0-9]|3[01])\\$[./A-Za-z0-9]{53}$",
+          "description": "bcrypt hash, cost 10-31 (12 recommended). Generate with scripts/hash-password.sh. Never store a plaintext password here."
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "false rejects new logins for this client_id without deleting the entry."
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Free-form note for humans (owner, purpose); ignored by the server."
+        }
+      }
+    }
+  }
+}

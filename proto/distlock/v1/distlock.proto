@@ -1,0 +1,288 @@
+syntax = "proto3";
+
+package distlock.v1;
+
+// Wire format
+// -----------
+// Every message on a TCP connection is a protobuf `ClientFrame` (client -> server) or
+// `ServerFrame` (server -> client), prefixed by its encoded length as a u32 big-endian.
+// Frames larger than `HelloOk.max_frame_bytes` are a protocol error.
+//
+// The first client frame on a connection MUST be `Hello` (create a session, bcrypt-verified) or
+// `Attach` (join or resume an existing session with its token). Nothing else is accepted before it.
+
+message ClientFrame {
+  // Correlates the response. Non-zero, unique among this connection's in-flight requests.
+  uint64 seq = 1;
+  oneof body {
+    Hello hello = 10;
+    Attach attach = 11;
+    Acquire acquire = 12;
+    CancelAcquire cancel_acquire = 13;
+    Release release = 14;
+    Extend extend = 15;
+    CloseSession close_session = 16;
+    Ping ping = 17;
+    Maintenance maintenance = 18;
+  }
+}
+
+message ServerFrame {
+  // Echoes ClientFrame.seq. Zero for unsolicited pushes (30+).
+  uint64 seq = 1;
+  oneof body {
+    Error error = 10;
+    HelloOk hello_ok = 11;
+    AttachOk attach_ok = 12;
+    AcquireOk acquire_ok = 13;
+    CancelOk cancel_ok = 14;
+    ReleaseOk release_ok = 15;
+    ExtendOk extend_ok = 16;
+    CloseSessionOk close_session_ok = 17;
+    Pong pong = 18;
+    MaintenanceOk maintenance_ok = 19;
+
+    // Pushes. May be delivered on ANY connection attached to the session.
+    Granted granted = 30;
+    WaitTimedOut wait_timed_out = 31;
+    LeaseExpired lease_expired = 32;
+    Shutdown shutdown = 33;
+  }
+}
+
+// ---------------------------------------------------------------- enums
+
+enum Mode {
+  MODE_UNSPECIFIED = 0;
+  MODE_MUTEX = 1;
+  MODE_READ = 2;       // RwLock, shared
+  MODE_WRITE = 3;      // RwLock, exclusive
+  MODE_SEMAPHORE = 4;
+}
+
+// Outcome tag a holder leaves for the next acquirer. Only SUCCEEDED/FAILED/STORED may be set by
+// clients; ABANDONED is assigned by the server when a lease expires or a session closes holding it.
+enum HolderState {
+  HOLDER_STATE_UNSET = 0;
+  HOLDER_STATE_SUCCEEDED = 1;
+  HOLDER_STATE_FAILED = 2;
+  HOLDER_STATE_STORED = 3;
+  HOLDER_STATE_ABANDONED = 4;
+}
+
+enum ErrorCode {
+  ERROR_CODE_OK = 0;
+  ERROR_CODE_UNAUTHENTICATED = 1;     // bad credentials / unknown user / bad session token
+  ERROR_CODE_INVALID_ARGUMENT = 2;
+  ERROR_CODE_BUSY = 3;                // try-lock (wait_ms = 0) could not be granted
+  ERROR_CODE_KIND_MISMATCH = 4;       // name exists with a different kind
+  ERROR_CODE_CAPACITY_MISMATCH = 5;   // semaphore exists with a different capacity
+  ERROR_CODE_NOT_HELD = 6;            // unknown/expired token, or not held by this session
+  ERROR_CODE_REQUEST_CONFLICT = 7;    // request_id reused with different parameters
+  ERROR_CODE_RESOURCE_EXHAUSTED = 8;  // queue / per-session limits
+  ERROR_CODE_UNSUPPORTED_VERSION = 9;
+  ERROR_CODE_SESSION_NOT_FOUND = 10;  // expired, closed, or server restarted: all locks are lost
+  ERROR_CODE_UNAVAILABLE = 11;        // startup grace period; retry later
+  ERROR_CODE_INTERNAL = 12;
+  ERROR_CODE_MAINTENANCE_FAILED = 13; // a maintenance command could not be carried out; nothing changed
+}
+
+// ---------------------------------------------------------------- session
+
+message Hello {
+  uint32 protocol_version = 1;  // currently 1
+  string client_id = 2;         // application name == username in users.json
+  string password = 3;
+  string instance_label = 4;    // free-form, diagnostics only (host/pid/pod)
+}
+
+message HelloOk {
+  uint64 session_id = 1;
+  bytes session_token = 2;          // opaque; present it in Attach on every other connection
+  uint32 max_frame_bytes = 3;
+  uint32 max_ttl_ms = 4;            // server cap on a lease / extension
+  uint32 max_wait_ms = 5;           // server cap on Acquire.wait_ms
+  uint32 ping_interval_ms = 6;      // send Ping at least this often when idle
+}
+
+message Attach {
+  uint64 session_id = 1;
+  bytes session_token = 2;
+}
+
+// Reclaim: what the server believes this session holds / waits for right now.
+message AttachOk {
+  SessionView view = 1;
+  uint32 max_frame_bytes = 2;
+  uint32 ping_interval_ms = 3;
+}
+
+message SessionView {
+  repeated HeldLock held = 1;
+  repeated PendingRequest pending = 2;
+}
+
+message HeldLock {
+  uint64 request_id = 1;
+  string name = 2;
+  Mode mode = 3;
+  uint64 fencing_token = 4;
+  uint32 ttl_remaining_ms = 5;
+  PreviousState previous = 6;      // as reported when the lock was granted; absent if there was none
+}
+
+message PendingRequest {
+  uint64 request_id = 1;
+  string name = 2;
+  Mode mode = 3;
+}
+
+message CloseSession {}
+message CloseSessionOk {}
+
+message Ping { uint64 nonce = 1; }
+message Pong { uint64 nonce = 1; }
+
+// ---------------------------------------------------------------- locks
+
+message Acquire {
+  uint64 request_id = 1;           // client-chosen, unique per session; makes retries idempotent
+  string name = 2;
+  Mode mode = 3;
+  uint32 ttl_ms = 4;               // lease length once granted (clock starts at the grant)
+  uint32 wait_ms = 5;              // max time to wait in the queue; 0 = try-lock
+  uint32 semaphore_capacity = 6;   // MODE_SEMAPHORE only
+  uint32 permits = 7;              // MODE_SEMAPHORE only; 0 is treated as 1
+}
+
+message AcquireOk {
+  oneof outcome {
+    Grant granted = 1;   // granted immediately
+    Queued queued = 2;   // wait for a `Granted` / `WaitTimedOut` push
+  }
+}
+
+message Queued {}
+
+message Grant {
+  uint64 request_id = 1;
+  string name = 2;
+  uint64 fencing_token = 3;
+  uint32 ttl_remaining_ms = 4;
+  PreviousState previous = 5;      // absent when no (unexpired) tag exists
+}
+
+message PreviousState {
+  HolderState state = 1;
+  uint64 set_by_token = 2;         // fencing token of the holder that set it
+  uint32 age_ms = 3;
+}
+
+message CancelAcquire { uint64 request_id = 1; }
+
+message CancelOk {
+  enum Outcome {
+    OUTCOME_NOT_FOUND = 0;
+    OUTCOME_DEQUEUED = 1;          // was waiting; removed
+    OUTCOME_RELEASED_GRANT = 2;    // had already been granted; the lock was released
+  }
+  Outcome outcome = 1;
+}
+
+message Release {
+  string name = 1;
+  uint64 fencing_token = 2;
+  HolderState state = 3;           // UNSET = leave the existing tag untouched
+  uint32 state_ttl_ms = 4;         // 0 = server default
+}
+
+message ReleaseOk {}
+
+message Extend {
+  repeated ExtendItem items = 1;   // batch renewals to save round trips
+}
+
+message ExtendItem {
+  string name = 1;
+  uint64 fencing_token = 2;
+  uint32 ttl_ms = 3;               // new lease length from now; never shortens an existing lease
+}
+
+message ExtendOk {
+  repeated ExtendResult results = 1;   // same order as the request
+}
+
+message ExtendResult {
+  string name = 1;
+  uint64 fencing_token = 2;
+  ErrorCode code = 3;              // OK or NOT_HELD / INVALID_ARGUMENT
+  uint32 ttl_remaining_ms = 4;
+}
+
+// ---------------------------------------------------------------- maintenance
+//
+// Administrative commands. There is no per-user authorization yet, so any authenticated client may
+// send them; each is designed to be safe and idempotent for that reason (see ResetUsers).
+
+message Maintenance {
+  oneof command {
+    ResetUsers reset_users = 1;
+  }
+}
+
+message MaintenanceOk {
+  oneof outcome {
+    ResetUsersOk reset_users = 1;
+  }
+}
+
+// Re-read the server's users file and swap it in atomically. Logins are never refused or delayed
+// while this happens: a check uses either the old users or the new ones, never a mixture.
+//
+// Users that are no longer in the file, or are now disabled, are thrown out: their sessions end
+// (every lock they hold is released with tag ABANDONED, after the usual lock-delay, and every
+// request they have waiting is cancelled) and every one of their TCP connections is closed.
+// That includes the connection this request arrived on, if the sender was thrown out; the reply
+// is sent first. Live sessions of users whose password merely changed are left alone.
+//
+// If the file cannot be loaded (unreadable, invalid) nothing changes and the error is
+// ERROR_CODE_MAINTENANCE_FAILED. Re-running with an unchanged file is a no-op.
+message ResetUsers {}
+
+// Counts only, so that a client cannot use this to enumerate other applications' names (the
+// names are in the server log).
+message ResetUsersOk {
+  uint32 added = 1;
+  uint32 removed = 2;
+  uint32 disabled = 3;
+  uint32 enabled = 4;
+  uint32 password_changed = 5;
+  uint32 sessions_closed = 6;      // sessions of removed/disabled users that were ended
+  uint32 connections_closed = 7;   // their TCP connections, closed by the server
+  bool invoker_dropped = 8;        // the sender itself was thrown out; its connection closes after this reply
+}
+
+// ---------------------------------------------------------------- errors and pushes
+
+message Error {
+  ErrorCode code = 1;
+  string message = 2;
+  uint32 existing_capacity = 3;    // CAPACITY_MISMATCH only
+}
+
+// A queued Acquire was granted.
+message Granted { Grant grant = 1; }
+
+message WaitTimedOut {
+  uint64 request_id = 1;
+  string name = 2;
+}
+
+// The lease ran out server-side. Stop using the protected resource.
+message LeaseExpired {
+  string name = 1;
+  uint64 fencing_token = 2;
+}
+
+// The server is draining. Finish up, then reconnect elsewhere / later and Attach.
+message Shutdown { uint32 drain_ms = 1; }

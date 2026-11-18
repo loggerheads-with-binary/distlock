@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc bb6f45742cd83c64931ac188f590171248e31dc88c76a5858e171d09760ec17e # shrinks to ops = [Acquire { session: 1, which: 2, variant: 2, ttl: 1493, wait: 0 }, Acquire { session: 1, which: 2, variant: 1, ttl: 1, wait: 1 }, Acquire { session: 1, which: 2, variant: 0, ttl: 1, wait: 441 }, Tick { by: 1 }, Acquire { session: 1, which: 0, variant: 0, ttl: 1, wait: 0 }]
+cc 0c001a33d1202c7b0fc8eed1a38afbaa8935face28abcca1a706423ab9d146a0 # shrinks to ops = [Acquire { session: 1, which: 1, variant: 1, ttl: 1, wait: 0 }, Acquire { session: 1, which: 1, variant: 2, ttl: 1, wait: 0 }]
+cc 44bdc59f55d2f2e69d0d13646ff5f764c8c98b1b3315514bc920da63dbe25be9 # shrinks to ops = [Acquire { session: 1, which: 0, variant: 0, ttl: 527, wait: 0 }, Extend { session: 1, pick: 0, ttl: 1 }]

@@ -1,0 +1,29 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "distlock"
+version = "0.1.0"
+description = "Distributed locks (mutex, read/write, semaphore) with leases, on top of a Rust client"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["pydantic>=2.5,<3"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Typing :: Typed",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.maturin]
+# The pure-Python package is ./distlock; the compiled module is distlock._native.
+module-name = "distlock._native"
+python-source = "."
+strip = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"

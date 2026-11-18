@@ -1,0 +1,15 @@
+[package]
+name = "distlock-core"
+description = "Pure, synchronous lock-table state machine for distlock"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = "2.0.21"
+
+[dev-dependencies]
+proptest = "1.12.0"

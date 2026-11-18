@@ -1,0 +1,23 @@
+{
+  "$schema": "./users.schema.json",
+  "version": 1,
+  "description": "EXAMPLE ONLY. These hashes belong to random passwords that were discarded, so nobody can log in with this file. Copy it to config/users.json (git-ignored) and replace every hash using scripts/hash-password.sh.",
+  "users": [
+    {
+      "client_id": "billing-service",
+      "password_hash": "$2b$12$NwOpVuooNpocSkyBxG7pteavGYGTkdK/kR/jhmW/UAK6.UyOArwsS",
+      "description": "Billing service. Every pod of the app shares this client_id; each pod opens its own session."
+    },
+    {
+      "client_id": "report-generator",
+      "password_hash": "$2b$12$JB5Q.pl8oQtoZN0Fb.NXFubNB1ocjuwKLceMSOKML0pN0F6rguWge",
+      "description": "Nightly report jobs."
+    },
+    {
+      "client_id": "legacy-importer",
+      "password_hash": "$2b$12$JpJ5WmbVp/HqHY0R.DGyiOGR.Hl6jA2vGSSbwKB23.F/InulwTiNS",
+      "enabled": false,
+      "description": "Disabled: shows how to revoke a client without deleting its entry."
+    }
+  ]
+}
