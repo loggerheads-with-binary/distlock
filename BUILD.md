@@ -46,7 +46,7 @@ directory; builds there can fail with spurious errors.
 
 * `.github/workflows/ci.yml` runs on every pull request into `main` (and in the merge queue, and on
   pushes to `main`): `lint` (fmt, clippy, docs with warnings denied), `rust` (tests on Linux and macOS)
-  and `python` (3.9 and 3.13, Linux and macOS). To make it gate merging, turn on branch protection
+  and `python` (3.11 and 3.13, Linux and macOS). To make it gate merging, turn on branch protection
   for `main` (Settings > Branches) and require the status checks `lint`, `rust (...)` and `python (...)`.
   A workflow cannot block a merge by itself; the protection rule is what does.
 * `.github/workflows/release.yml` runs when a tag `v*` is pushed. It checks that the tagged commit is
