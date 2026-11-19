@@ -134,7 +134,7 @@ means N actors keyed by `hash(name)`, which is also the unit that would map to n
                                        sleeps until table.next_deadline()
 ```
 
-* **Wire format:** `u32` big-endian length + one protobuf frame (`proto/distlock/v1/distlock.proto`).
+* **Wire format:** `u32` big-endian length + one protobuf frame (`crates/distlock-proto/proto/distlock/v1/distlock.proto`).
   Frames over `DISTLOCK_MAX_FRAME_BYTES` are a protocol error. `seq` is non-zero on every request; `0`
   marks a server push.
 * **Connection task:** enforces the handshake timeout, runs bcrypt (on the blocking pool, at most

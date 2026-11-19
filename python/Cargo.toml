@@ -3,6 +3,9 @@ name = "distlock-py"
 version = "0.1.0"
 edition = "2024"
 publish = false
+description = "Python bindings for distlock-client"
+license = "MIT"
+repository = "https://github.com/loggerheads-with-binary/distlock"
 
 [lib]
 name = "_native"

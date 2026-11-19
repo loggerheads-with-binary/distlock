@@ -1,4 +1,4 @@
-//! Wire types for the distlock protocol. See `proto/distlock/v1/distlock.proto`.
+//! Wire types for the distlock protocol. See `crates/distlock-proto/proto/distlock/v1/distlock.proto`.
 
 pub mod v1 {
     #![allow(clippy::all)]

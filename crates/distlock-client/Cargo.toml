@@ -3,7 +3,10 @@ name = "distlock-client"
 description = "Async and blocking client for the distlock server"
 version.workspace = true
 edition.workspace = true
-publish.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [lints]
 workspace = true

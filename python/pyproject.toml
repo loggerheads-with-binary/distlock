@@ -7,6 +7,7 @@ name = "distlock"
 version = "0.1.0"
 description = "Distributed locks (mutex, read/write, semaphore) with leases, on top of a Rust client"
 readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.9"
 dependencies = ["pydantic>=2.5,<3"]
 classifiers = [
@@ -15,8 +16,11 @@ classifiers = [
     "Typing :: Typed",
 ]
 
+[project.urls]
+Repository = "https://github.com/loggerheads-with-binary/distlock"
+
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8" , "maturin>=1.7,<2.0"]
 
 [tool.maturin]
 # The pure-Python package is ./distlock; the compiled module is distlock._native.
