@@ -42,6 +42,29 @@ pytest
 Tip: if your checkout is on an external or network volume, set `CARGO_TARGET_DIR` to a local
 directory; builds there can fail with spurious errors.
 
+## GitHub Actions
+
+* `.github/workflows/ci.yml` runs on every pull request into `main` (and in the merge queue, and on
+  pushes to `main`): `lint` (fmt, clippy, docs with warnings denied), `rust` (tests on Linux and macOS)
+  and `python` (3.9 and 3.13, Linux and macOS). To make it gate merging, turn on branch protection
+  for `main` (Settings > Branches) and require the status checks `lint`, `rust (...)` and `python (...)`.
+  A workflow cannot block a merge by itself; the protection rule is what does.
+* `.github/workflows/release.yml` runs when a tag `v*` is pushed. It checks that the tagged commit is
+  on `main` and that every version in the repo equals the tag (`scripts/check-version.sh`), reruns the
+  tests, builds the sdist and wheels (Linux x86_64/aarch64, macOS x86_64/arm64, Windows x64), and only
+  if all of that succeeds publishes to crates.io and then PyPI. Re-running it after a partial failure is
+  safe: versions already published are skipped.
+
+  One-time setup: a repository secret `CARGO_REGISTRY_TOKEN`; a PyPI
+  [trusted publisher](https://docs.pypi.org/trusted-publishers/) for this repo (workflow `release.yml`,
+  environment `pypi`); and GitHub environments `crates-io` and `pypi` (add required reviewers there
+  for a manual approval step before publishing).
+
+  To release: bump the versions (step 0 below), merge to `main`, then
+  `git tag v0.2.0 && git push origin v0.2.0`.
+
+The manual steps below are the same thing done by hand, and the fallback if the workflow is unavailable.
+
 ## Releasing
 
 ### 0. Prepare
@@ -51,7 +74,7 @@ directory; builds there can fail with spurious errors.
    (`distlock-proto`, `distlock-core` in the crates that use them).
 2. Run the full build and test section above, plus the docs check:
    `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`
-3. Commit, then tag: `git tag v0.1.0`.
+3. Check them with `scripts/check-version.sh v0.1.0`, commit, merge to main, then tag: `git tag v0.1.0`.
 
 ### 1. crates.io (and docs.rs)
 

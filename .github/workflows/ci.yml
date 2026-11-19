@@ -1,0 +1,89 @@
+name: CI
+
+# Runs on every pull request into main, so it can be a required check *before* merge
+# (Settings > Branches > branch protection > "Require status checks": lint, rust, python).
+# `merge_group` makes the same checks run in GitHub's merge queue, and `push` re-checks main itself.
+on:
+  pull_request:
+    branches: [main]
+  merge_group:
+  push:
+    branches: [main]
+  workflow_call: # the release workflow runs the same checks before publishing
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Docs build without warnings (what docs.rs will build)
+        run: cargo doc --workspace --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  rust:
+    name: rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install htpasswd (the tests make bcrypt hashes with it)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y apache2-utils
+      - run: cargo test --workspace --locked
+
+  python:
+    name: python ${{ matrix.python }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            python
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install htpasswd
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y apache2-utils
+      - name: Build the server the tests start
+        run: cargo build -p distlock-server --locked
+      - name: Build and install the extension, then test
+        working-directory: python
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          pip install maturin pytest "pydantic>=2.5"
+          maturin develop
+          pytest
