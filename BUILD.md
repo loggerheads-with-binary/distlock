@@ -115,14 +115,14 @@ twine upload dist/*                      # a PyPI API token; use `--repository t
 ```
 
 * The sdist contains `crates/distlock-client` and `crates/distlock-proto`, so
-  `pip install distlock` from source works on a machine with a Rust toolchain, without
+  `pip install pydistlock` from source works on a machine with a Rust toolchain, without
   crates.io having your crates. Publishing to PyPI does not depend on step 1.
 * A wheel is built only for the machine you run it on. For Linux (manylinux) and Windows wheels,
   build in CI, for example with `PyO3/maturin-action` on a matrix of runners
   (`ubuntu`, `macos`, `windows`, with `--manylinux auto` on Linux), collect all wheels in
   `dist/`, then upload them together. PyPI "trusted publishing" avoids storing a token.
 * Rehearse first: upload to TestPyPI, then
-  `pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ distlock`
+  `pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ pydistlock`
   (the extra index is for `pydantic`).
 * As with crates.io, a PyPI version can never be re-uploaded; bump the version for any fix.
 

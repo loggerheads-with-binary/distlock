@@ -1,5 +1,16 @@
-# distlock (Python)
+# pydistlock
 
+[![CI](https://github.com/loggerheads-with-binary/distlock/actions/workflows/ci.yml/badge.svg)](https://github.com/loggerheads-with-binary/distlock/actions/workflows/ci.yml)
+[![Release](https://github.com/loggerheads-with-binary/distlock/actions/workflows/release.yml/badge.svg)](https://github.com/loggerheads-with-binary/distlock/actions/workflows/release.yml)
+[![codecov](https://codecov.io/gh/loggerheads-with-binary/distlock/graph/badge.svg?component=pydistlock)](https://codecov.io/gh/loggerheads-with-binary/distlock)
+[![PyPI](https://img.shields.io/pypi/v/pydistlock.svg)](https://pypi.org/project/pydistlock/)
+[![Python](https://img.shields.io/pypi/pyversions/pydistlock.svg)](https://pypi.org/project/pydistlock/)
+
+```bash
+pip install pydistlock        # imports as `distlock`
+```
+
+The client for the [distlock](https://github.com/loggerheads-with-binary/distlock) server.
 Distributed locks for Python: mutexes, read/write locks and semaphores, with leases that renew
 themselves, on top of the Rust client in `crates/distlock-client`. Async and blocking, one API.
 
@@ -17,7 +28,7 @@ async with client.mutex("nightly-report") as guard:
     guard.set_status(ProcessingStatus.SUCCEEDED) # recorded when the block ends
 ```
 
-## Install and build
+## Build from source
 
 The package is a PyO3 extension (`distlock._native`, built with [maturin](https://www.maturin.rs))
 plus a pure-Python layer. One `abi3` wheel serves Python 3.9 and newer.
@@ -52,7 +63,7 @@ client = DistLockClient(client_id="billing", password="s3cret", host="10.0.0.5",
 | `default_ttl` | lease length in seconds for locks that do not set `ttl` | `30` |
 | `tls` | not supported by the server yet; `true` raises `ConfigError` | `false` |
 
-URLs are parsed with `urllib` and validated with pydantic ([`ClientSettings`](distlock/settings.py));
+URLs are parsed with `urllib` and validated with pydantic ([`ClientSettings`](https://github.com/loggerheads-with-binary/distlock/blob/main/python/distlock/settings.py));
 mistakes raise `ConfigError` with a message that never contains the password.
 
 Creating a client does no I/O. The pool connects the first time a lock is acquired (or on

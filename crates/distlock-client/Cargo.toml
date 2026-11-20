@@ -1,6 +1,7 @@
 [package]
 name = "distlock-client"
 description = "Async and blocking client for the distlock server"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
