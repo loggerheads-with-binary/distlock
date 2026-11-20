@@ -181,7 +181,7 @@ dependencies = [
 
 [[package]]
 name = "distlock-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bcrypt",
  "bytes",
@@ -201,7 +201,7 @@ dependencies = [
 
 [[package]]
 name = "distlock-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "proptest",
  "thiserror",
@@ -209,7 +209,7 @@ dependencies = [
 
 [[package]]
 name = "distlock-proto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "prost",
  "prost-build",
@@ -218,7 +218,7 @@ dependencies = [
 
 [[package]]
 name = "distlock-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arc-swap",
  "bcrypt",

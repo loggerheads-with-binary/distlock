@@ -28,6 +28,7 @@ from .errors import (
     ServerError,
     SessionLost,
 )
+from .event import Event
 from .lock import Lock, LockGuard
 from .maintenance import Maintenance, ResetUsersReport
 from .settings import ClientSettings
@@ -38,6 +39,7 @@ __all__ = [
     "ClientSettings",
     "Lock",
     "LockGuard",
+    "Event",
     "LockMode",
     "ProcessingStatus",
     "PreviousStatus",

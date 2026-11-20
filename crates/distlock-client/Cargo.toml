@@ -13,7 +13,7 @@ workspace = true
 
 [dependencies]
 bytes = "1.12.2"
-distlock-proto = { version = "0.1.0", path = "../distlock-proto" }
+distlock-proto = { version = "0.2.0", path = "../distlock-proto" }
 futures-util = { version = "0.3.34", features = ["sink"] }
 getrandom = "0.4.3"
 prost = "0.14.6"

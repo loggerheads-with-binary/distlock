@@ -74,7 +74,7 @@ The manual steps below are the same thing done by hand, and the fallback if the 
    (`distlock-proto`, `distlock-core` in the crates that use them).
 2. Run the full build and test section above, plus the docs check:
    `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`
-3. Check them with `scripts/check-version.sh v0.1.0`, commit, merge to main, then tag: `git tag v0.1.0`.
+3. Check them with `scripts/check-version.sh v0.2.0`, commit, merge to main, then tag: `git tag v0.2.0`.
 
 ### 1. crates.io (and docs.rs)
 

@@ -13,8 +13,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use distlock_core::{
-    AcquireRequest, AcquireStatus, CancelOutcome, Event, FencingToken, LockTable, Name, RequestId,
-    SessionId,
+    AcquireRequest, AcquireStatus, CancelOutcome, Event, EventSetRequest, EventWaitRequest,
+    EventWaitStatus, FencingToken, LockTable, Name, RequestId, SessionId,
 };
 use distlock_proto::v1 as pb;
 use distlock_proto::v1::{client_frame, server_frame};
@@ -26,8 +26,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::ServerConfig;
 use crate::convert::{
-    core_error_to_pb, dur, error_body, frame, grant_to_pb, ms, release_state_from_pb, view_to_pb,
-    want_from_pb,
+    core_error_to_pb, dur, error_body, frame, grant_to_pb, ms, publication_to_pb,
+    release_state_from_pb, view_to_pb, want_from_pb,
 };
 use crate::users::{Reload, UserDb};
 use crate::util::random_bytes;
@@ -428,6 +428,8 @@ impl Actor {
                     server_frame::Body::ExtendOk(pb::ExtendOk { results }),
                 );
             }
+            client_frame::Body::EventWait(w) => self.event_wait(conn, seq, sid, now, w),
+            client_frame::Body::EventSet(e) => self.event_set(conn, seq, now, e),
             client_frame::Body::CloseSession(_) => self.close_session(conn, seq, sid, now),
             client_frame::Body::Hello(_)
             | client_frame::Body::Attach(_)
@@ -477,6 +479,62 @@ impl Actor {
                     seq,
                     server_frame::Body::AcquireOk(pb::AcquireOk {
                         outcome: Some(outcome),
+                    }),
+                );
+            }
+            Err(e) => self.reply_core_error(conn, seq, &e),
+        }
+    }
+
+    fn event_wait(
+        &mut self,
+        conn: ConnId,
+        seq: u64,
+        sid: SessionId,
+        now: Duration,
+        w: pb::EventWait,
+    ) {
+        let req = EventWaitRequest {
+            session: sid,
+            request: RequestId(w.request_id),
+            name: Arc::from(w.name.as_str()),
+            wait: dur(w.wait_ms),
+            after: w.after_id,
+        };
+        let outcome = match self.table.event_wait(now, req) {
+            Ok(EventWaitStatus::Published(p)) => {
+                pb::event_wait_ok::Outcome::Published(publication_to_pb(&p))
+            }
+            Ok(EventWaitStatus::Waiting) => pb::event_wait_ok::Outcome::Queued(pb::Queued {}),
+            Err(e) => return self.reply_core_error(conn, seq, &e),
+        };
+        self.reply(
+            conn,
+            seq,
+            server_frame::Body::EventWaitOk(pb::EventWaitOk {
+                outcome: Some(outcome),
+            }),
+        );
+    }
+
+    /// Wakes the waiters (their pushes go out in `flush_events`, right after this) and tells the
+    /// setter how many there were.
+    fn event_set(&mut self, conn: ConnId, seq: u64, now: Duration, e: pb::EventSet) {
+        let req = EventSetRequest {
+            name: Arc::from(e.name.as_str()),
+            value: e.value.as_deref().map(Arc::from),
+            publish_for: e.publish_ms.map(dur),
+        };
+        match self.table.event_set(now, req) {
+            Ok(out) => {
+                debug!(event = %e.name, woken = out.woken, id = out.id, "event set");
+                self.reply(
+                    conn,
+                    seq,
+                    server_frame::Body::EventSetOk(pb::EventSetOk {
+                        woken: u32::try_from(out.woken).unwrap_or(u32::MAX),
+                        publication_id: out.id,
+                        publish_ms: ms(out.publish_for),
                     }),
                 );
             }
@@ -602,6 +660,19 @@ impl Actor {
                         name: name.to_string(),
                     };
                     self.push(session, server_frame::Body::WaitTimedOut(body));
+                }
+                Event::Published {
+                    session,
+                    request,
+                    name,
+                    publication,
+                } => {
+                    let body = pb::EventPublished {
+                        request_id: request.0,
+                        name: name.to_string(),
+                        publication: Some(publication_to_pb(&publication)),
+                    };
+                    self.push(session, server_frame::Body::EventPublished(body));
                 }
                 Event::LeaseExpired {
                     session,

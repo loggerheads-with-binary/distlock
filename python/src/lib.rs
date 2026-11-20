@@ -11,7 +11,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use distlock_client::{
-    Acquire, Client, DistLockClient, Error, Kind, Lock, Lost, ResetUsersReport, State,
+    Acquire, Client, DistLockClient, Error, EventSet, EventWait, Kind, Lock, Lost, Published,
+    ResetUsersReport, SetResult, State,
 };
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
@@ -111,6 +112,48 @@ fn reset_tuple(r: ResetUsersReport) -> ResetTuple {
         r.connections_closed,
         r.invoker_dropped,
     )
+}
+
+/// A publication as a tuple: `(id, value, age_seconds)`.
+type PublishedTuple = (u64, Option<String>, f64);
+
+fn published_tuple(p: Published) -> PublishedTuple {
+    (p.id, p.value, p.age.as_secs_f64())
+}
+
+/// A set's result as a tuple: `(woken, id, publish_for_seconds)`.
+type SetTuple = (u32, u64, f64);
+
+fn set_tuple(r: SetResult) -> SetTuple {
+    (r.woken, r.id, r.publish_for.as_secs_f64())
+}
+
+fn build_event_wait(
+    name: String,
+    wait: Option<f64>,
+    after: u64,
+    namespace: Option<String>,
+) -> PyResult<EventWait> {
+    Ok(EventWait {
+        name,
+        wait: opt_secs("timeout", wait)?,
+        after,
+        namespace,
+    })
+}
+
+fn build_event_set(
+    name: String,
+    value: Option<String>,
+    publish_for: Option<f64>,
+    namespace: Option<String>,
+) -> PyResult<EventSet> {
+    Ok(EventSet {
+        name,
+        value,
+        publish_for: opt_secs("publish_for", publish_for)?,
+        namespace,
+    })
 }
 
 fn kind_name(kind: Kind) -> &'static str {
@@ -356,6 +399,76 @@ impl NativeClient {
             async move { cell.get().await?.try_acquire(request).await },
         )?;
         lock.map(|l| l.map(NativeLock::new)).map_err(err)
+    }
+
+    /// Wait for an event: `(publication_id, value, age_seconds)`. See `distlock.Event`.
+    #[pyo3(signature = (name, timeout, after, namespace))]
+    fn wait_event<'py>(
+        &self,
+        py: Python<'py>,
+        name: String,
+        timeout: Option<f64>,
+        after: u64,
+        namespace: Option<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let request = build_event_wait(name, timeout, after, namespace)?;
+        let cell = Arc::clone(&self.cell);
+        future_into_py(py, async move {
+            let client = cell.get().await.map_err(err)?;
+            client
+                .wait_event(request)
+                .await
+                .map(published_tuple)
+                .map_err(err)
+        })
+    }
+
+    #[pyo3(signature = (name, timeout, after, namespace))]
+    fn wait_event_sync(
+        &self,
+        py: Python<'_>,
+        name: String,
+        timeout: Option<f64>,
+        after: u64,
+        namespace: Option<String>,
+    ) -> PyResult<PublishedTuple> {
+        let request = build_event_wait(name, timeout, after, namespace)?;
+        let cell = Arc::clone(&self.cell);
+        let published = block_on(py, async move { cell.get().await?.wait_event(request).await })?;
+        published.map(published_tuple).map_err(err)
+    }
+
+    /// Set an event: `(woken, publication_id, publish_for_seconds)`. See `distlock.Event`.
+    #[pyo3(signature = (name, value, publish_for, namespace))]
+    fn set_event<'py>(
+        &self,
+        py: Python<'py>,
+        name: String,
+        value: Option<String>,
+        publish_for: Option<f64>,
+        namespace: Option<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let request = build_event_set(name, value, publish_for, namespace)?;
+        let cell = Arc::clone(&self.cell);
+        future_into_py(py, async move {
+            let client = cell.get().await.map_err(err)?;
+            client.set_event(request).await.map(set_tuple).map_err(err)
+        })
+    }
+
+    #[pyo3(signature = (name, value, publish_for, namespace))]
+    fn set_event_sync(
+        &self,
+        py: Python<'_>,
+        name: String,
+        value: Option<String>,
+        publish_for: Option<f64>,
+        namespace: Option<String>,
+    ) -> PyResult<SetTuple> {
+        let request = build_event_set(name, value, publish_for, namespace)?;
+        let cell = Arc::clone(&self.cell);
+        let result = block_on(py, async move { cell.get().await?.set_event(request).await })?;
+        result.map(set_tuple).map_err(err)
     }
 
     /// End the session on the server (releasing every lock) and stop the pool.

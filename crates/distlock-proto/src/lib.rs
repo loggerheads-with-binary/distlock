@@ -51,6 +51,49 @@ mod tests {
     }
 
     #[test]
+    fn event_messages_roundtrip_and_keep_absent_apart_from_empty_and_zero() {
+        // "No value" and "the empty string", and "server default window" and "no window", are four
+        // different requests; they must survive the wire as such.
+        for (value, publish_ms) in [
+            (None, None),
+            (Some(String::new()), Some(0)),
+            (Some("payload".to_owned()), Some(2_500)),
+        ] {
+            let frame = ClientFrame {
+                seq: 3,
+                body: Some(client_frame::Body::EventSet(EventSet {
+                    name: "ns:event:deploy-finished".into(),
+                    value: value.clone(),
+                    publish_ms,
+                })),
+            };
+            let decoded = ClientFrame::decode(frame.encode_to_vec().as_slice()).unwrap();
+            assert_eq!(decoded, frame);
+            let Some(client_frame::Body::EventSet(set)) = decoded.body else {
+                panic!("not an EventSet")
+            };
+            assert_eq!((set.value, set.publish_ms), (value, publish_ms));
+        }
+
+        let push = ServerFrame {
+            seq: 0,
+            body: Some(server_frame::Body::EventPublished(EventPublished {
+                request_id: 9,
+                name: "ns:event:deploy-finished".into(),
+                publication: Some(Publication {
+                    id: 1_700_000_000_000_002,
+                    value: None,
+                    age_ms: 0,
+                }),
+            })),
+        };
+        assert_eq!(
+            ServerFrame::decode(push.encode_to_vec().as_slice()).unwrap(),
+            push
+        );
+    }
+
+    #[test]
     fn garbage_does_not_panic() {
         // Decoder robustness smoke test (real fuzzing comes later).
         for len in 0..64u8 {

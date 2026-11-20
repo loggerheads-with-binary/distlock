@@ -27,7 +27,8 @@ use tracing::{debug, info, warn};
 
 use crate::conn::{Conn, REQUEST_TIMEOUT, Reader, Writer, tune_socket};
 use crate::error::{Error, Result};
-use crate::lock::{Acquire, Kind, Lock, Previous, State, wire_name};
+use crate::event::{EventSet, EventWait, Published, SetResult};
+use crate::lock::{Acquire, Kind, Lock, Previous, State, family_name, wire_name};
 use crate::maintenance::{Maintenance, protocol};
 
 const PROTOCOL_VERSION: u32 = 1;
@@ -300,6 +301,30 @@ impl Client {
         }
     }
 
+    /// Wait for an event to be set; see [the module docs](crate::event). Returns what the set
+    /// carried. With `wait: None` this waits as long as the server allows; `Some(d)` at most `d`
+    /// (then [`Error::Timeout`]); `Some(0)` only checks whether the event is published right now.
+    ///
+    /// Dropping the future withdraws the wait from the server.
+    pub async fn wait_event(&self, w: EventWait) -> Result<Published> {
+        let wire = self
+            .inner
+            .event_wire_name(w.namespace.as_deref(), &w.name)?;
+        self.inner.event_wait(&wire, w.wait, w.after).await
+    }
+
+    /// Set an event: wake every client waiting for it, and publish it for its window.
+    ///
+    /// A set is not retried when a connection fails mid-request, because the first attempt may have
+    /// been applied and repeating it would wake the next waiters a second time. It fails with
+    /// [`Error::ConnectionLost`] instead, and whether the event was set is then unknown.
+    pub async fn set_event(&self, s: EventSet) -> Result<SetResult> {
+        let wire = self
+            .inner
+            .event_wire_name(s.namespace.as_deref(), &s.name)?;
+        self.inner.event_set(wire, s.value, s.publish_for).await
+    }
+
     /// Release every lock this session holds, end the session on the server, and stop the pool.
     /// (Dropping all clones and locks also stops the pool, but leaves the session to expire.)
     pub async fn close(&self) -> Result<()> {
@@ -342,12 +367,19 @@ struct SessionInfo {
 
 pub(crate) enum WaitOutcome {
     Granted(pb::Grant),
+    /// An event this wait was registered on was set.
+    Published(pb::Publication),
     TimedOut,
     SessionLost,
+    /// The server no longer has this event wait (it was lost with a connection, or its wake-up was
+    /// never delivered): the caller registers it again.
+    Missing,
 }
 
 struct Waiter {
     epoch: u64,
+    /// An event wait, not a lock request: judged against `pending_events` when reconciling.
+    event: bool,
     tx: oneshot::Sender<WaitOutcome>,
     /// When the server confirmed the request is queued. Reconciliation only judges waiters that
     /// were queued before the `Attach` it is reconciling (otherwise the view may predate them).
@@ -784,25 +816,35 @@ impl Inner {
             view.held.iter().map(|h| h.fencing_token).collect();
         let pending: std::collections::HashSet<u64> =
             view.pending.iter().map(|p| p.request_id).collect();
+        let pending_events: std::collections::HashSet<u64> =
+            view.pending_events.iter().map(|p| p.request_id).collect();
 
         // Waiters whose fate the server decided while we were away (or whose push was lost).
         let decided: Vec<(u64, WaitOutcome)> = st
             .waiters
             .iter()
             .filter(|(_, w)| w.epoch == epoch && w.queued_at.is_some_and(|q| q < attach_sent))
-            .filter_map(|(rid, _)| match held_by_request.get(rid) {
-                Some(h) => Some((
-                    *rid,
-                    WaitOutcome::Granted(pb::Grant {
-                        request_id: h.request_id,
-                        name: h.name.clone(),
-                        fencing_token: h.fencing_token,
-                        ttl_remaining_ms: h.ttl_remaining_ms,
-                        previous: h.previous,
-                    }),
-                )),
-                None if pending.contains(rid) => None, // still queued: keep waiting
-                None => Some((*rid, WaitOutcome::TimedOut)),
+            .filter_map(|(rid, w)| {
+                if w.event {
+                    // Registered on the server, or not: if not, it was woken or timed out while we
+                    // were away and we were not told. The waiter asks again, and a publication
+                    // that is still inside its window answers at once.
+                    return (!pending_events.contains(rid)).then_some((*rid, WaitOutcome::Missing));
+                }
+                match held_by_request.get(rid) {
+                    Some(h) => Some((
+                        *rid,
+                        WaitOutcome::Granted(pb::Grant {
+                            request_id: h.request_id,
+                            name: h.name.clone(),
+                            fencing_token: h.fencing_token,
+                            ttl_remaining_ms: h.ttl_remaining_ms,
+                            previous: h.previous,
+                        }),
+                    )),
+                    None if pending.contains(rid) => None, // still queued: keep waiting
+                    None => Some((*rid, WaitOutcome::TimedOut)),
+                }
             })
             .collect();
         for (rid, outcome) in decided {
@@ -841,6 +883,13 @@ impl Inner {
                         // Nobody wants it any more (the acquire was cancelled): hand it back.
                         self.release_in_background(grant.name, grant.fencing_token);
                     }
+                }
+            }
+            sf::Body::EventPublished(p) => {
+                // A wait that was cancelled meanwhile has nobody to tell, and nothing to hand back.
+                let waiter = self.st().waiters.remove(&p.request_id);
+                if let (Some(w), Some(publication)) = (waiter, p.publication) {
+                    let _ = w.tx.send(WaitOutcome::Published(publication));
                 }
             }
             sf::Body::WaitTimedOut(t) => {
@@ -912,6 +961,7 @@ impl Inner {
                 request_id,
                 Waiter {
                     epoch: session.epoch,
+                    event: false,
                     tx,
                     queued_at: None,
                 },
@@ -970,6 +1020,12 @@ impl Inner {
                         pending.settle();
                         return Err(Error::SessionLost);
                     }
+                    Ok(Ok(WaitOutcome::Published(_) | WaitOutcome::Missing)) => {
+                        pending.settle();
+                        return Err(Error::Protocol(
+                            "an event outcome arrived for a lock request".into(),
+                        ));
+                    }
                     // The server never said anything: give up (the guard cancels the request).
                     Err(_) => return Err(Error::Timeout),
                 }
@@ -985,6 +1041,175 @@ impl Inner {
             }
         };
         Ok(self.make_lock(&grant, req, session.epoch, base, guard))
+    }
+
+    /// `namespace:event:name`, after the same checks as for locks.
+    fn event_wire_name(&self, namespace: Option<&str>, name: &str) -> Result<String> {
+        if name.is_empty() {
+            return Err(Error::InvalidArgument(
+                "event name must not be empty".into(),
+            ));
+        }
+        let namespace = match namespace {
+            Some(n) => Some(n).filter(|n| !n.is_empty()),
+            None => self.settings.namespace.as_deref(),
+        };
+        if namespace.is_some_and(|n| n.contains(':')) {
+            return Err(Error::InvalidArgument(
+                "namespace must not contain ':'".into(),
+            ));
+        }
+        Ok(family_name(namespace, "event", name))
+    }
+
+    /// Wait for an event, registering again if the server loses the wait while we are reconnecting.
+    pub(crate) async fn event_wait(
+        self: &Arc<Self>,
+        wire_name: &str,
+        wait: Option<Duration>,
+        after: u64,
+    ) -> Result<Published> {
+        let session = self.session().await?;
+        let budget = wait.map_or(session.max_wait, |w| w.min(session.max_wait));
+        let deadline = Instant::now() + budget;
+        let mut first = true;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() && !first {
+                return Err(Error::Timeout);
+            }
+            first = false;
+            if let Some(published) = self.event_wait_attempt(wire_name, after, remaining).await? {
+                return Ok(published);
+            }
+        }
+    }
+
+    /// One registration. `Ok(None)`: the server lost the wait; register it again.
+    async fn event_wait_attempt(
+        self: &Arc<Self>,
+        wire_name: &str,
+        after: u64,
+        wait: Duration,
+    ) -> Result<Option<Published>> {
+        let session = self.session().await?;
+        let request_id = self.request_ids.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut st = self.st();
+            if st.session.as_ref().map(|s| s.epoch) != Some(session.epoch) {
+                return Err(Error::SessionLost);
+            }
+            // Registered *before* the request is sent, so a push can never beat us to it.
+            st.waiters.insert(
+                request_id,
+                Waiter {
+                    epoch: session.epoch,
+                    event: true,
+                    tx,
+                    queued_at: None,
+                },
+            );
+        }
+        // If this future is dropped from here on, withdraw the wait from the server.
+        let mut pending = PendingGuard {
+            inner: Arc::clone(self),
+            request_id,
+            cancel: true,
+        };
+
+        let (reply, _) = self
+            .call_retrying(cf::Body::EventWait(pb::EventWait {
+                request_id,
+                name: wire_name.to_owned(),
+                wait_ms: millis(wait),
+                after_id: after,
+            }))
+            .await?;
+        match reply {
+            sf::Body::EventWaitOk(pb::EventWaitOk {
+                outcome: Some(pb::event_wait_ok::Outcome::Published(p)),
+            }) => {
+                pending.settle();
+                Ok(Some(p.into()))
+            }
+            sf::Body::EventWaitOk(pb::EventWaitOk {
+                outcome: Some(pb::event_wait_ok::Outcome::Queued(_)),
+            }) => {
+                if let Some(w) = self.st().waiters.get_mut(&request_id) {
+                    w.queued_at = Some(Instant::now());
+                }
+                match tokio::time::timeout(wait + WAIT_SLACK, rx).await {
+                    Ok(Ok(WaitOutcome::Published(p))) => {
+                        pending.settle();
+                        Ok(Some(p.into()))
+                    }
+                    Ok(Ok(WaitOutcome::TimedOut)) => {
+                        pending.settle();
+                        Err(Error::Timeout)
+                    }
+                    Ok(Ok(WaitOutcome::Missing)) => {
+                        pending.settle();
+                        Ok(None)
+                    }
+                    Ok(Ok(WaitOutcome::SessionLost) | Err(_)) => {
+                        pending.settle();
+                        Err(Error::SessionLost)
+                    }
+                    Ok(Ok(WaitOutcome::Granted(_))) => {
+                        pending.settle();
+                        Err(Error::Protocol(
+                            "a lock grant arrived for an event wait".into(),
+                        ))
+                    }
+                    // The server never said anything: give up (the guard withdraws the wait).
+                    Err(_) => Err(Error::Timeout),
+                }
+            }
+            // A zero wait found nothing published: that is a timeout, not a busy lock.
+            sf::Body::Error(e) if e.code == pb::ErrorCode::Busy as i32 => {
+                pending.settle();
+                Err(Error::Timeout)
+            }
+            sf::Body::Error(e) => {
+                pending.settle();
+                Err(Error::from_server(e))
+            }
+            other => Err(Error::Protocol(format!(
+                "unexpected reply to EventWait: {other:?}"
+            ))),
+        }
+    }
+
+    /// One attempt, on one connection, never retried (see [`Client::set_event`]).
+    pub(crate) async fn event_set(
+        &self,
+        wire_name: String,
+        value: Option<String>,
+        publish_for: Option<Duration>,
+    ) -> Result<SetResult> {
+        let conn = self.pick_conn().await?;
+        let reply = conn
+            .call(
+                cf::Body::EventSet(pb::EventSet {
+                    name: wire_name,
+                    value,
+                    publish_ms: publish_for.map(millis),
+                }),
+                REQUEST_TIMEOUT,
+            )
+            .await?;
+        match reply {
+            sf::Body::EventSetOk(ok) => Ok(SetResult {
+                woken: ok.woken,
+                id: ok.publication_id,
+                publish_for: Duration::from_millis(u64::from(ok.publish_ms)),
+            }),
+            sf::Body::Error(e) => Err(Error::from_server(e)),
+            other => Err(Error::Protocol(format!(
+                "unexpected reply to EventSet: {other:?}"
+            ))),
+        }
     }
 
     fn make_lock(

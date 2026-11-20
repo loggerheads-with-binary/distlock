@@ -170,6 +170,13 @@ pub enum Event {
         name: Name,
         token: FencingToken,
     },
+    /// An event this request was waiting on was set.
+    Published {
+        session: SessionId,
+        request: RequestId,
+        name: Name,
+        publication: Publication,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -191,18 +198,81 @@ pub struct PendingRequest {
     pub want: Want,
 }
 
+/// An event wait that is still registered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingEvent {
+    pub request: RequestId,
+    pub name: Name,
+}
+
 /// What the table believes a session holds and waits for. Returned on reconnect (reclaim).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionView {
     pub held: Vec<HeldGrant>,
     pub pending: Vec<PendingRequest>,
+    pub pending_events: Vec<PendingEvent>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Stats {
     pub entries: usize,
+    /// Event names that currently have waiters or a live publication.
+    pub events: usize,
     pub sessions: usize,
     pub timers: usize,
+}
+
+// ---------------------------------------------------------------------------------------- events
+
+/// One setting of an event, as a waiter sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Publication {
+    /// Drawn from the same strictly increasing counter as fencing tokens, so ids never repeat or go
+    /// backwards, even across restarts of a server seeded from the wall clock.
+    pub id: u64,
+    pub value: Option<Arc<str>>,
+    /// Time since the set. Zero for a waiter woken by the set itself.
+    pub age: Duration,
+}
+
+#[derive(Debug, Clone)]
+pub struct EventWaitRequest {
+    pub session: SessionId,
+    /// Shares one id space with [`AcquireRequest::request`]: unique per session across both.
+    pub request: RequestId,
+    pub name: Name,
+    /// Max time to wait. Zero: only an already-published event satisfies the wait. Clamped to
+    /// `Config::max_wait`.
+    pub wait: Duration,
+    /// Only a publication with an id greater than this satisfies the wait without waiting. Pass the
+    /// id of the last publication handled to skip it while it is still inside its window.
+    pub after: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EventWaitStatus {
+    /// An event inside its publish window satisfied the wait at once.
+    Published(Publication),
+    /// Wait for `Event::Published` or `Event::WaitTimedOut`.
+    Waiting,
+}
+
+#[derive(Debug, Clone)]
+pub struct EventSetRequest {
+    pub name: Name,
+    pub value: Option<Arc<str>>,
+    /// How long the event stays published after this set. `None`: `Config::event_default_publish`.
+    /// Zero: only the waiters present now are woken. Clamped to `Config::event_max_publish`.
+    pub publish_for: Option<Duration>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetOutcome {
+    /// Waiters woken by this set.
+    pub woken: usize,
+    pub id: u64,
+    /// The publish window that was applied.
+    pub publish_for: Duration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

@@ -415,6 +415,38 @@ impl Client {
         .await
     }
 
+    /// Wait for an event (`after_id` 0: any publication counts).
+    pub async fn event_wait(
+        &mut self,
+        request_id: u64,
+        name: &str,
+        wait_ms: u32,
+        after_id: u64,
+    ) -> sf::Body {
+        self.call(cf::Body::EventWait(pb::EventWait {
+            request_id,
+            name: name.into(),
+            wait_ms,
+            after_id,
+        }))
+        .await
+    }
+
+    /// Set an event. `publish_ms: None` asks for the server's default window.
+    pub async fn event_set(
+        &mut self,
+        name: &str,
+        value: Option<&str>,
+        publish_ms: Option<u32>,
+    ) -> sf::Body {
+        self.call(cf::Body::EventSet(pb::EventSet {
+            name: name.into(),
+            value: value.map(str::to_owned),
+            publish_ms,
+        }))
+        .await
+    }
+
     pub async fn cancel(&mut self, request_id: u64) -> pb::cancel_ok::Outcome {
         match self
             .call(cf::Body::CancelAcquire(pb::CancelAcquire { request_id }))
@@ -486,5 +518,42 @@ pub fn expect_granted_push(body: sf::Body) -> pb::Grant {
     match body {
         sf::Body::Granted(pb::Granted { grant: Some(g) }) => g,
         other => panic!("expected a Granted push, got {other:?}"),
+    }
+}
+
+pub fn expect_event_queued(body: sf::Body) {
+    match body {
+        sf::Body::EventWaitOk(pb::EventWaitOk {
+            outcome: Some(pb::event_wait_ok::Outcome::Queued(_)),
+        }) => {}
+        other => panic!("expected a queued event wait, got {other:?}"),
+    }
+}
+
+pub fn expect_event_published(body: sf::Body) -> pb::Publication {
+    match body {
+        sf::Body::EventWaitOk(pb::EventWaitOk {
+            outcome: Some(pb::event_wait_ok::Outcome::Published(p)),
+        }) => p,
+        other => panic!("expected an immediate publication, got {other:?}"),
+    }
+}
+
+pub fn expect_event_set(body: sf::Body) -> pb::EventSetOk {
+    match body {
+        sf::Body::EventSetOk(ok) => ok,
+        other => panic!("expected EventSetOk, got {other:?}"),
+    }
+}
+
+/// An `EventPublished` push, unwrapped to `(request_id, name, publication)`.
+pub fn expect_published_push(body: sf::Body) -> (u64, String, pb::Publication) {
+    match body {
+        sf::Body::EventPublished(pb::EventPublished {
+            request_id,
+            name,
+            publication: Some(p),
+        }) => (request_id, name, p),
+        other => panic!("expected an EventPublished push, got {other:?}"),
     }
 }
