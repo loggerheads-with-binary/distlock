@@ -35,10 +35,12 @@ pub mod blocking;
 mod client;
 mod conn;
 mod error;
+pub mod event;
 mod lock;
 mod maintenance;
 
 pub use client::{Client, DistLockClient};
 pub use error::{Error, Result};
+pub use event::{EventSet, EventWait, Published, SetResult};
 pub use lock::{Acquire, Kind, Lock, Lost, Previous, State};
 pub use maintenance::{Maintenance, ResetUsersReport};

@@ -16,3 +16,10 @@ __pycache__/
 .pytest_cache/
 uv.lock
 .venv
+
+/config/users.json
+# Coverage output
+lcov.info
+coverage.xml
+.coverage
+*.profraw

@@ -10,8 +10,12 @@
 //! 2. Take the `Entry` *out* of the map, mutate it freely alongside `&mut self`.
 //! 3. `dispatch` grants to queue heads while they are admissible (strict FIFO).
 //! 4. `put_entry` puts it back, or drops it if idle with no residue (and schedules GC otherwise).
+//!
+//! Events (named broadcasts) live in their own map, `event_table`, and follow the same pattern with
+//! `put_event`. They share the session index, the timers and the request-id space with locks.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::types::*;
@@ -38,6 +42,12 @@ pub struct Config {
     pub startup_grace: Duration,
     /// First fencing token. Seed from the wall clock so tokens stay monotonic across restarts.
     pub token_floor: u64,
+    /// How long an event stays published after a `set` that does not say.
+    pub event_default_publish: Duration,
+    /// Cap on how long an event may stay published after a `set`.
+    pub event_max_publish: Duration,
+    /// Longest value a `set` may carry, in bytes.
+    pub max_event_value_len: usize,
 }
 
 impl Default for Config {
@@ -54,6 +64,9 @@ impl Default for Config {
             max_requests_per_session: 10_000,
             startup_grace: Duration::ZERO,
             token_floor: 1,
+            event_default_publish: Duration::from_secs(10),
+            event_max_publish: Duration::from_secs(600),
+            max_event_value_len: 4096,
         }
     }
 }
@@ -136,6 +149,31 @@ impl Entry {
 }
 
 #[derive(Debug)]
+struct EventWaiter {
+    session: SessionId,
+    request: RequestId,
+    deadline: Time,
+}
+
+/// The latest setting of an event, while it is inside its publish window.
+#[derive(Debug, Clone)]
+struct Published {
+    id: u64,
+    value: Option<Arc<str>>,
+    set_at: Time,
+    until: Time,
+}
+
+/// One event name: who is waiting for it, and its latest setting while that is still published.
+#[derive(Debug, Default)]
+struct EventState {
+    waiters: VecDeque<EventWaiter>,
+    published: Option<Published>,
+    /// When the outstanding expiry timer for this name fires, if any. Keeps timers O(1) per name.
+    timer_at: Option<Time>,
+}
+
+#[derive(Debug)]
 enum Timer {
     /// Lease expiry. Re-arms itself if the lease was extended (so extend never touches timers).
     Expire { name: Name, token: FencingToken },
@@ -146,12 +184,32 @@ enum Timer {
     },
     /// Lock-delay end / state-tag expiry: re-dispatch the queue and garbage-collect.
     Entry { name: Name },
+    /// An event wait ran out of patience.
+    EventWait {
+        name: Name,
+        session: SessionId,
+        request: RequestId,
+    },
+    /// An event's publish window ended: forget it, and garbage-collect the name.
+    EventExpire { name: Name },
 }
 
-/// Every live request (pending or held) of a session, by request id.
+/// Every live request of a session, by request id: locks (pending or held) and event waits.
+/// One id space: a request id is in at most one of the two maps.
 #[derive(Debug, Default)]
 struct SessionIndex {
     requests: HashMap<RequestId, Name>,
+    events: HashMap<RequestId, Name>,
+}
+
+impl SessionIndex {
+    fn outstanding(&self) -> usize {
+        self.requests.len() + self.events.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.requests.is_empty() && self.events.is_empty()
+    }
 }
 
 #[derive(Debug)]
@@ -159,6 +217,7 @@ pub struct LockTable {
     cfg: Config,
     now: Time,
     entries: HashMap<Name, Entry>,
+    event_table: HashMap<Name, EventState>,
     sessions: HashMap<SessionId, SessionIndex>,
     timers: BTreeMap<(Time, u64), Timer>,
     timer_seq: u64,
@@ -173,6 +232,7 @@ impl LockTable {
             cfg,
             now: Time::ZERO,
             entries: HashMap::new(),
+            event_table: HashMap::new(),
             sessions: HashMap::new(),
             timers: BTreeMap::new(),
             timer_seq: 0,
@@ -203,6 +263,7 @@ impl LockTable {
     pub fn stats(&self) -> Stats {
         Stats {
             entries: self.entries.len(),
+            events: self.event_table.len(),
             sessions: self.sessions.len(),
             timers: self.timers.len(),
         }
@@ -233,6 +294,13 @@ impl LockTable {
         if let Some(known_name) = known {
             return self.answer_retry(&req, &known_name);
         }
+        if self
+            .sessions
+            .get(&req.session)
+            .is_some_and(|s| s.events.contains_key(&req.request))
+        {
+            return Err(Error::RequestConflict);
+        }
 
         let kind = req.want.kind();
         if let Some(existing) = self.entries.get(&req.name)
@@ -248,7 +316,7 @@ impl LockTable {
         let outstanding = self
             .sessions
             .get(&req.session)
-            .map_or(0, |s| s.requests.len());
+            .map_or(0, SessionIndex::outstanding);
         if outstanding >= self.cfg.max_requests_per_session {
             return Err(Error::ResourceExhausted(
                 "too many outstanding requests for session",
@@ -301,8 +369,9 @@ impl LockTable {
         result
     }
 
-    /// Cancel a request. Waiting → dequeued. Already granted → the grant is released, which is what
-    /// a client whose `acquire` future was dropped wants (no lock is ever granted to nobody).
+    /// Cancel a request. Waiting → dequeued (an event wait too). Already granted → the grant is
+    /// released, which is what a client whose `acquire` future was dropped wants (no lock is ever
+    /// granted to nobody).
     pub fn cancel(&mut self, now: Time, session: SessionId, request: RequestId) -> CancelOutcome {
         self.advance(now);
         let Some(known_name) = self
@@ -311,7 +380,7 @@ impl LockTable {
             .and_then(|s| s.requests.get(&request))
             .cloned()
         else {
-            return CancelOutcome::NotFound;
+            return self.cancel_event_wait(session, request);
         };
         let Some((name, mut entry)) = self.entries.remove_entry(&known_name) else {
             return CancelOutcome::NotFound;
@@ -428,10 +497,20 @@ impl LockTable {
     fn end_session(&mut self, now: Time, session: SessionId, forced: bool) {
         self.advance(now);
         let now = self.now;
-        let Some(index) = self.sessions.remove(&session) else {
+        let Some(SessionIndex { requests, events }) = self.sessions.remove(&session) else {
             return;
         };
-        let mut names: Vec<Name> = index.requests.into_values().collect();
+        let mut event_names: Vec<Name> = events.into_values().collect();
+        event_names.sort();
+        event_names.dedup();
+        for name in event_names {
+            let Some((name, mut state)) = self.event_table.remove_entry(&name) else {
+                continue;
+            };
+            state.waiters.retain(|w| w.session != session);
+            self.put_event(name, state);
+        }
+        let mut names: Vec<Name> = requests.into_values().collect();
         names.sort();
         names.dedup();
         for name in names {
@@ -498,8 +577,22 @@ impl LockTable {
                 });
             }
         }
+        for (request, name) in &index.events {
+            let waiting = self.event_table.get(name).is_some_and(|e| {
+                e.waiters
+                    .iter()
+                    .any(|w| w.session == session && w.request == *request)
+            });
+            if waiting {
+                view.pending_events.push(PendingEvent {
+                    request: *request,
+                    name: name.clone(),
+                });
+            }
+        }
         view.held.sort_by_key(|h| h.token);
         view.pending.sort_by_key(|p| p.request);
+        view.pending_events.sort_by_key(|p| p.request);
         view
     }
 
@@ -583,6 +676,12 @@ impl LockTable {
                     request,
                 } => self.on_wait_timeout(name, session, request),
                 Timer::Entry { name } => self.on_entry_timer(name),
+                Timer::EventWait {
+                    name,
+                    session,
+                    request,
+                } => self.on_event_wait_timeout(name, session, request),
+                Timer::EventExpire { name } => self.on_event_timer(name),
             }
         }
         self.now = target;
@@ -786,10 +885,255 @@ impl LockTable {
     fn forget(&mut self, session: SessionId, request: RequestId) {
         if let Some(index) = self.sessions.get_mut(&session) {
             index.requests.remove(&request);
-            if index.requests.is_empty() {
+            if index.is_empty() {
                 self.sessions.remove(&session);
             }
         }
+    }
+
+    fn index_event(&mut self, session: SessionId, request: RequestId, name: Name) {
+        self.sessions
+            .entry(session)
+            .or_default()
+            .events
+            .insert(request, name);
+    }
+
+    fn forget_event(&mut self, session: SessionId, request: RequestId) {
+        if let Some(index) = self.sessions.get_mut(&session) {
+            index.events.remove(&request);
+            if index.is_empty() {
+                self.sessions.remove(&session);
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ events
+
+    /// Wait for an event. If it is inside its publish window (and newer than `req.after`) the
+    /// answer is immediate; otherwise the request is registered, and `Event::Published` or
+    /// `Event::WaitTimedOut` follows. With a zero `wait`, "nothing published" is `Error::Busy`.
+    pub fn event_wait(
+        &mut self,
+        now: Time,
+        req: EventWaitRequest,
+    ) -> Result<EventWaitStatus, Error> {
+        self.advance(now);
+        let now = self.now;
+        self.validate_event_name(&req.name)?;
+
+        // Idempotent retry of a wait we already know about.
+        let known = self
+            .sessions
+            .get(&req.session)
+            .and_then(|s| s.events.get(&req.request))
+            .cloned();
+        if let Some(known_name) = known {
+            if known_name != req.name {
+                return Err(Error::RequestConflict);
+            }
+            let waiting = self.event_table.get(&known_name).is_some_and(|e| {
+                e.waiters
+                    .iter()
+                    .any(|w| w.session == req.session && w.request == req.request)
+            });
+            return if waiting {
+                Ok(EventWaitStatus::Waiting)
+            } else {
+                Err(Error::Internal("indexed event wait is not pending"))
+            };
+        }
+        let index = self.sessions.get(&req.session);
+        if index.is_some_and(|s| s.requests.contains_key(&req.request)) {
+            return Err(Error::RequestConflict);
+        }
+        if index.map_or(0, SessionIndex::outstanding) >= self.cfg.max_requests_per_session {
+            return Err(Error::ResourceExhausted(
+                "too many outstanding requests for session",
+            ));
+        }
+
+        let wait = req.wait.min(self.cfg.max_wait);
+        let (name, mut state) = self
+            .event_table
+            .remove_entry(&req.name)
+            .unwrap_or_else(|| (req.name.clone(), EventState::default()));
+        let hit = state
+            .published
+            .as_ref()
+            .filter(|p| p.until > now && p.id > req.after)
+            .map(|p| Publication {
+                id: p.id,
+                value: p.value.clone(),
+                age: now.saturating_sub(p.set_at),
+            });
+        let result = if let Some(publication) = hit {
+            Ok(EventWaitStatus::Published(publication))
+        } else if wait.is_zero() {
+            Err(Error::Busy)
+        } else if state.waiters.len() >= self.cfg.max_waiters_per_lock {
+            Err(Error::ResourceExhausted("event wait queue is full"))
+        } else {
+            let deadline = now + wait;
+            state.waiters.push_back(EventWaiter {
+                session: req.session,
+                request: req.request,
+                deadline,
+            });
+            self.schedule(
+                deadline,
+                Timer::EventWait {
+                    name: name.clone(),
+                    session: req.session,
+                    request: req.request,
+                },
+            );
+            self.index_event(req.session, req.request, name.clone());
+            Ok(EventWaitStatus::Waiting)
+        };
+        self.put_event(name, state);
+        result
+    }
+
+    /// Set an event: wake everyone waiting for it (in arrival order) and publish it for
+    /// `publish_for`. Not idempotent: every call is a new publication with a new id.
+    pub fn event_set(&mut self, now: Time, req: EventSetRequest) -> Result<SetOutcome, Error> {
+        self.advance(now);
+        let now = self.now;
+        self.validate_event_name(&req.name)?;
+        if req
+            .value
+            .as_ref()
+            .is_some_and(|v| v.len() > self.cfg.max_event_value_len)
+        {
+            return Err(Error::InvalidArgument("event value is too long"));
+        }
+        let publish_for = req
+            .publish_for
+            .unwrap_or(self.cfg.event_default_publish)
+            .min(self.cfg.event_max_publish);
+
+        let id = self.next_token;
+        self.next_token += 1;
+        let (name, mut state) = self
+            .event_table
+            .remove_entry(&req.name)
+            .unwrap_or_else(|| (req.name.clone(), EventState::default()));
+
+        let waiters = std::mem::take(&mut state.waiters);
+        let woken = waiters.len();
+        for w in waiters {
+            self.forget_event(w.session, w.request);
+            self.events.push(Event::Published {
+                session: w.session,
+                request: w.request,
+                name: name.clone(),
+                publication: Publication {
+                    id,
+                    value: req.value.clone(),
+                    age: Duration::ZERO,
+                },
+            });
+        }
+        // The latest set wins: it replaces whatever was published before, even with a zero window.
+        state.published = (!publish_for.is_zero()).then(|| Published {
+            id,
+            value: req.value.clone(),
+            set_at: now,
+            until: now + publish_for,
+        });
+        self.put_event(name, state);
+        Ok(SetOutcome {
+            woken,
+            id,
+            publish_for,
+        })
+    }
+
+    fn cancel_event_wait(&mut self, session: SessionId, request: RequestId) -> CancelOutcome {
+        let Some(name) = self
+            .sessions
+            .get(&session)
+            .and_then(|s| s.events.get(&request))
+            .cloned()
+        else {
+            return CancelOutcome::NotFound;
+        };
+        let Some((name, mut state)) = self.event_table.remove_entry(&name) else {
+            return CancelOutcome::NotFound;
+        };
+        let outcome = match state
+            .waiters
+            .iter()
+            .position(|w| w.session == session && w.request == request)
+        {
+            Some(pos) => {
+                state.waiters.remove(pos);
+                CancelOutcome::Dequeued
+            }
+            None => CancelOutcome::NotFound,
+        };
+        self.forget_event(session, request);
+        self.put_event(name, state);
+        outcome
+    }
+
+    fn validate_event_name(&self, name: &str) -> Result<(), Error> {
+        if name.is_empty() || name.len() > self.cfg.max_name_len {
+            return Err(Error::InvalidArgument("name length out of range"));
+        }
+        Ok(())
+    }
+
+    fn on_event_wait_timeout(&mut self, name: Name, session: SessionId, request: RequestId) {
+        let now = self.now;
+        let Some(mut state) = self.event_table.remove(&name) else {
+            return;
+        };
+        // `deadline <= now` guards against a stale timer of an earlier incarnation of this request id.
+        if let Some(pos) = state
+            .waiters
+            .iter()
+            .position(|w| w.session == session && w.request == request && w.deadline <= now)
+        {
+            state.waiters.remove(pos);
+            self.forget_event(session, request);
+            self.events.push(Event::WaitTimedOut {
+                session,
+                request,
+                name: name.clone(),
+            });
+        }
+        self.put_event(name, state);
+    }
+
+    fn on_event_timer(&mut self, name: Name) {
+        let Some(mut state) = self.event_table.remove(&name) else {
+            return;
+        };
+        if state.timer_at.is_some_and(|at| at <= self.now) {
+            state.timer_at = None;
+        }
+        self.put_event(name, state);
+    }
+
+    /// Return an event name to the table, or drop it if nobody waits and nothing is published.
+    /// A live publication keeps an expiry timer, so the name is collected when its window ends.
+    fn put_event(&mut self, name: Name, mut state: EventState) {
+        let now = self.now;
+        if state.published.as_ref().is_some_and(|p| p.until <= now) {
+            state.published = None;
+        }
+        if let Some(until) = state.published.as_ref().map(|p| p.until)
+            && state.timer_at.is_none_or(|scheduled| scheduled > until)
+        {
+            state.timer_at = Some(until);
+            self.schedule(until, Timer::EventExpire { name: name.clone() });
+        }
+        if state.waiters.is_empty() && state.published.is_none() {
+            return; // nothing to remember: the name leaves the table
+        }
+        self.event_table.insert(name, state);
     }
 
     /// Verify every structural invariant. O(everything); for tests and debug assertions.
@@ -806,6 +1150,9 @@ impl LockTable {
         let now = self.now;
         let mut expire_timers: HashMap<(Name, FencingToken), Time> = HashMap::new();
         let mut wait_timers: HashMap<(Name, SessionId, RequestId), Vec<Time>> = HashMap::new();
+        let mut event_wait_timers: HashMap<(Name, SessionId, RequestId), Vec<Time>> =
+            HashMap::new();
+        let mut event_expiry: HashMap<Name, Time> = HashMap::new();
         for ((at, _), timer) in &self.timers {
             match timer {
                 Timer::Expire { name, token } => {
@@ -823,6 +1170,20 @@ impl LockTable {
                         .push(*at);
                 }
                 Timer::Entry { .. } => {}
+                Timer::EventWait {
+                    name,
+                    session,
+                    request,
+                } => {
+                    event_wait_timers
+                        .entry((name.clone(), *session, *request))
+                        .or_default()
+                        .push(*at);
+                }
+                Timer::EventExpire { name } => {
+                    let slot = event_expiry.entry(name.clone()).or_insert(*at);
+                    *slot = (*slot).min(*at);
+                }
             }
         }
 
@@ -945,12 +1306,64 @@ impl LockTable {
             }
         }
 
-        let mut indexed = 0usize;
-        for (session, index) in &self.sessions {
+        let mut event_live = 0usize;
+        for (name, state) in &self.event_table {
             ensure!(
-                !index.requests.is_empty(),
-                "{session:?}: empty session index kept"
+                !state.waiters.is_empty() || state.published.is_some(),
+                "{name}: idle event kept with nothing waiting or published"
             );
+            for w in &state.waiters {
+                ensure!(w.deadline > now, "{name}: event waiter past its deadline");
+                ensure!(
+                    self.sessions
+                        .get(&w.session)
+                        .and_then(|s| s.events.get(&w.request))
+                        .is_some_and(|n| n == name),
+                    "{name}: event waiter not indexed"
+                );
+                ensure!(
+                    event_wait_timers
+                        .get(&(name.clone(), w.session, w.request))
+                        .is_some_and(|ats| ats.contains(&w.deadline)),
+                    "{name}: event waiter has no timeout timer"
+                );
+                event_live += 1;
+            }
+            if let Some(p) = &state.published {
+                ensure!(p.until > now, "{name}: publication outlived its window");
+                ensure!(
+                    p.id < self.next_token,
+                    "{name}: publication id from the future"
+                );
+                ensure!(
+                    event_expiry.get(name).is_some_and(|at| *at <= p.until),
+                    "{name}: publication has no expiry timer"
+                );
+            }
+        }
+
+        let mut indexed = 0usize;
+        let mut event_indexed = 0usize;
+        for (session, index) in &self.sessions {
+            ensure!(!index.is_empty(), "{session:?}: empty session index kept");
+            for request in index.events.keys() {
+                ensure!(
+                    !index.requests.contains_key(request),
+                    "{session:?}/{request:?}: used by a lock request and an event wait"
+                );
+            }
+            for (request, name) in &index.events {
+                let waiting = self.event_table.get(name).is_some_and(|e| {
+                    e.waiters
+                        .iter()
+                        .any(|w| w.session == *session && w.request == *request)
+                });
+                ensure!(
+                    waiting,
+                    "{session:?}/{request:?}: indexed under {name} but not waiting there"
+                );
+                event_indexed += 1;
+            }
             for (request, name) in &index.requests {
                 let Some(entry) = self.entries.get(name) else {
                     return Err(format!(
@@ -975,6 +1388,10 @@ impl LockTable {
         ensure!(
             indexed == live,
             "index has {indexed} requests but {live} are live"
+        );
+        ensure!(
+            event_indexed == event_live,
+            "index has {event_indexed} event waits but {event_live} are waiting"
         );
         Ok(())
     }

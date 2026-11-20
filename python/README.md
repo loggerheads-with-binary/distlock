@@ -1,5 +1,16 @@
-# distlock (Python)
+# pydistlock
 
+[![CI](https://github.com/loggerheads-with-binary/distlock/actions/workflows/ci.yml/badge.svg)](https://github.com/loggerheads-with-binary/distlock/actions/workflows/ci.yml)
+[![Release](https://github.com/loggerheads-with-binary/distlock/actions/workflows/release.yml/badge.svg)](https://github.com/loggerheads-with-binary/distlock/actions/workflows/release.yml)
+[![codecov](https://codecov.io/gh/loggerheads-with-binary/distlock/graph/badge.svg?component=pydistlock)](https://codecov.io/gh/loggerheads-with-binary/distlock)
+[![PyPI](https://img.shields.io/pypi/v/pydistlock.svg)](https://pypi.org/project/pydistlock/)
+[![Python](https://img.shields.io/pypi/pyversions/pydistlock.svg)](https://pypi.org/project/pydistlock/)
+
+```bash
+pip install pydistlock        # imports as `distlock`
+```
+
+The client for the [distlock](https://github.com/loggerheads-with-binary/distlock) server.
 Distributed locks for Python: mutexes, read/write locks and semaphores, with leases that renew
 themselves, on top of the Rust client in `crates/distlock-client`. Async and blocking, one API.
 
@@ -17,7 +28,7 @@ async with client.mutex("nightly-report") as guard:
     guard.set_status(ProcessingStatus.SUCCEEDED) # recorded when the block ends
 ```
 
-## Install and build
+## Build from source
 
 The package is a PyO3 extension (`distlock._native`, built with [maturin](https://www.maturin.rs))
 plus a pure-Python layer. One `abi3` wheel serves Python 3.9 and newer.
@@ -52,7 +63,7 @@ client = DistLockClient(client_id="billing", password="s3cret", host="10.0.0.5",
 | `default_ttl` | lease length in seconds for locks that do not set `ttl` | `30` |
 | `tls` | not supported by the server yet; `true` raises `ConfigError` | `false` |
 
-URLs are parsed with `urllib` and validated with pydantic ([`ClientSettings`](distlock/settings.py));
+URLs are parsed with `urllib` and validated with pydantic ([`ClientSettings`](https://github.com/loggerheads-with-binary/distlock/blob/main/python/distlock/settings.py));
 mistakes raise `ConfigError` with a message that never contains the password.
 
 Creating a client does no I/O. The pool connects the first time a lock is acquired (or on
@@ -91,6 +102,42 @@ guard = lock.acquire_sync() / lock.try_acquire_sync()
 Cancellation is safe: cancelling a waiting `acquire` (a `wait_for` timeout, a cancelled task) withdraws
 the request from the server, so it can never be granted to nobody; Ctrl-C interrupts a blocking acquire the same way.
 
+## Events
+
+A named broadcast, like `asyncio.Event` with a limited memory: many clients wait, one sets, and the set says how many it woke.
+
+```python
+event = client.event("deploy-finished")           # also spelled client.Event(...)
+value = await event.wait(timeout=60)               # the setter's value, or None; LockTimeout after 60 s
+
+woken = await client.event("deploy-finished").set("v1.2.3")
+assert woken == number_of_clients_waiting_right_now
+```
+
+* `set(value=None, *, publish_for=None)`: **publish window.** For `publish_for` seconds after a set, the event counts as
+  *published*: a wait that starts in that window returns at once with the same value. After it the event is gone and waiters
+  wait for the next set. `None` uses the server's default (10 s), `0` wakes only the clients already waiting, and long windows
+  are capped by the server.
+* `wait(timeout=None)`: `None` waits as long as the server allows, `0` only checks whether the event is published right now,
+  anything else raises `LockTimeout` (a `TimeoutError`) when it runs out. Cancelling the task or pressing Ctrl-C withdraws the wait.
+* An `Event` object remembers the last publication its `wait()` returned and only returns newer ones, so a loop on one object
+  does not spin while a publication is still inside its window:
+
+```python
+event = client.event("tick")
+while True:
+    value = await event.wait()          # never the same publication twice
+```
+
+  Use a fresh `Event`, `event.reset()` or `wait(after=...)` to see an earlier publication again; `event.last_id` is the id of
+  the last one returned.
+* Blocking forms: `wait_sync()` and `set_sync()`.
+* Events are separate from locks: an event and a lock with the same name do not interact. Namespaces apply as for locks.
+* **Delivery.** A wait survives dropped connections. A set made while this client is disconnected cannot be delivered then,
+  but the client asks again after it reconnects and is answered from the publish window, so use a window longer than a
+  reconnect (the server default is 10 s) for events that must not be missed. With `publish_for=0` a wake-up lost that way is gone.
+  A `set` is never retried: if its connection fails, `ConnectionFailed` is raised and whether it took effect is unknown.
+
 ## The guard
 
 | | |
@@ -123,7 +170,7 @@ Everything derives from `DistLockError`. Where a standard exception fits, it is 
 | `ConfigError` | bad URL or settings |
 | `AuthenticationError` | wrong client id / password |
 | `ConnectionFailed` | server unreachable or not ready (the pool keeps retrying in the background) |
-| `LockTimeout` / `LockBusy` | waited out / `wait=0` and it was taken |
+| `LockTimeout` / `LockBusy` | waited out (a lock not obtained, or an event not set, in time) / `wait=0` and it was taken |
 | `LockLost` | the lease expired before release |
 | `MaintenanceError` | a maintenance command could not be carried out; nothing changed |
 | `SessionLost` | the server forgot the session; the client logs in again by itself, but old locks are gone |
@@ -189,6 +236,6 @@ dropped stops its pool and leaves its session to expire on the server.
 
 ## Names on the wire
 
-The server sees `namespace:family:name` with `family` one of `mutex`, `rw`, `sem`. That is how a mutex
+The server sees `namespace:family:name` with `family` one of `mutex`, `rw`, `sem`, or `event`. That is how a mutex
 and a read/write lock with the same name stay separate, and how namespaces keep applications apart.
 `:` is therefore not allowed in a namespace (it is fine inside a lock name).

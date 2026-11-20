@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from . import _native
 from .enums import LockMode
 from .errors import ConfigError, translate
+from .event import Event as _Event
 from .lock import Lock, _acall, _call
 from .maintenance import Maintenance
 from .settings import ClientSettings, validation_message
@@ -192,6 +193,33 @@ class DistLockClient:
         )
 
     # ------------------------------------------------------------------ lifecycle
+
+    def event(
+        self,
+        name: str,
+        *,
+        namespace: Optional[str] = None,
+        timeout: Optional[float] = None,
+        publish_for: Optional[float] = None,
+    ) -> _Event:
+        """A named broadcast, like :class:`asyncio.Event` with a limited memory::
+
+            val = await client.event("deploy-finished").wait()
+            woken = await client.event("deploy-finished").set("v1.2.3")
+
+        :param namespace: overrides the client's namespace; ``""`` means none.
+        :param timeout: how long :meth:`Event.wait` waits by default: ``None`` as long as the server
+            allows, ``0`` only checks.
+        :param publish_for: default publish window of :meth:`Event.set`, in seconds: how long after a
+            set a late waiter is still answered at once. ``None``: the server's default.
+
+        Events live apart from locks: an event and a lock with the same name do not interact.
+        Nothing happens on the server until you wait or set. See :class:`Event`.
+        """
+        return _Event(self._native, name, namespace=namespace, timeout=timeout, publish_for=publish_for)
+
+    #: The same as :meth:`event`, for code that reads better with a capital letter.
+    Event = event
 
     async def connect(self) -> None:
         """Connect now instead of on first use (to fail fast on bad credentials)."""

@@ -3,6 +3,8 @@
 //! no past-due leases, every lease and waiter has a timer, no idle residue), plus a few
 //! externally visible properties. At the end everything must drain to nothing (no leaks).
 
+use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 use std::time::Duration;
 
 use distlock_core::*;
@@ -41,6 +43,19 @@ enum Op {
     Revoke {
         session: u8,
     },
+    EventWait {
+        session: u8,
+        which: u8,
+        wait: u16,
+        /// Ask only for publications newer than the last set (instead of any).
+        newer: bool,
+    },
+    EventSet {
+        which: u8,
+        value: bool,
+        /// `None`: the server default window.
+        publish: Option<u16>,
+    },
     Tick {
         by: u16,
     },
@@ -57,11 +72,28 @@ fn op() -> impl Strategy<Value = Op> {
         1 => (1u8..=3, any::<u8>()).prop_map(|(session, pick)| Op::Cancel { session, pick }),
         1 => (1u8..=3).prop_map(|session| Op::Close { session }),
         1 => (1u8..=3).prop_map(|session| Op::Revoke { session }),
+        3 => (1u8..=3, 0u8..2, 0u16..3_000, any::<bool>())
+            .prop_map(|(session, which, wait, newer)| Op::EventWait { session, which, wait, newer }),
+        2 => (0u8..2, any::<bool>(), prop::option::of(0u16..3_000))
+            .prop_map(|(which, value, publish)| Op::EventSet { which, value, publish }),
         4 => (1u16..1_500).prop_map(|by| Op::Tick { by }),
     ]
 }
 
 const MAX_TTL_MS: u64 = 5_000;
+const DEFAULT_PUBLISH_MS: u64 = 2_000;
+
+/// What the table should say about an event, kept independently of it: the id and end of the
+/// latest set's publish window.
+#[derive(Clone, Copy)]
+struct ModelPublication {
+    id: u64,
+    until: u64,
+}
+
+fn event_name(which: u8) -> &'static str {
+    if which == 0 { "ev0" } else { "ev1" }
+}
 
 fn run(ops: Vec<Op>) {
     let cfg = Config {
@@ -71,12 +103,15 @@ fn run(ops: Vec<Op>) {
         default_state_ttl: ms(700),
         max_waiters_per_lock: 4,
         max_requests_per_session: 6,
+        event_default_publish: ms(DEFAULT_PUBLISH_MS),
         ..Config::default()
     };
     let mut table = LockTable::new(cfg);
     let mut now = 0u64;
     let mut next_request = 1u64;
     let mut last_token = 0u64;
+    let mut model: HashMap<&'static str, ModelPublication> = HashMap::new();
+    let mut last_set_id = 0u64;
 
     for op in ops {
         // Tokens must come out strictly increasing in the order they are issued:
@@ -174,11 +209,141 @@ fn run(ops: Vec<Op>) {
                     assert!(remaining <= ms(MAX_TTL_MS));
                 }
             }
+            Op::EventWait {
+                session,
+                which,
+                wait,
+                newer,
+            } => {
+                let name = event_name(which);
+                let after = if newer { last_set_id } else { 0 };
+                let request = RequestId(next_request);
+                next_request += 1;
+                let res = table.event_wait(
+                    ms(now),
+                    EventWaitRequest {
+                        session: SessionId(u64::from(session)),
+                        request,
+                        name: name.into(),
+                        wait: ms(u64::from(wait)),
+                        after,
+                    },
+                );
+                // The model says whether a publication qualifies right now.
+                let expected = model
+                    .get(name)
+                    .filter(|p| p.until > now && p.id > after)
+                    .copied();
+                match (res, expected) {
+                    (Ok(EventWaitStatus::Published(p)), Some(m)) => {
+                        assert_eq!(
+                            p.id, m.id,
+                            "answered with a publication that is not the latest"
+                        );
+                    }
+                    (Ok(EventWaitStatus::Published(p)), None) => {
+                        panic!("answered with {p:?} but nothing qualifying is published")
+                    }
+                    (Ok(EventWaitStatus::Waiting) | Err(Error::Busy), None) => {}
+                    (Err(Error::ResourceExhausted(_)), _) => {}
+                    (res, Some(m)) => {
+                        panic!(
+                            "{res:?}, but publication {} is live until {}",
+                            m.id, m.until
+                        )
+                    }
+                    (res, None) => panic!("unexpected event_wait result {res:?}"),
+                }
+            }
+            Op::EventSet {
+                which,
+                value,
+                publish,
+            } => {
+                let name = event_name(which);
+                // Who is waiting right now, according to the sessions' own views.
+                let mut waiting: BTreeSet<(u64, u64)> = BTreeSet::new();
+                for session in 1..=3u64 {
+                    for p in table
+                        .session_view(ms(now), SessionId(session))
+                        .pending_events
+                        .into_iter()
+                        .filter(|p| &*p.name == name)
+                    {
+                        waiting.insert((session, p.request.0));
+                    }
+                }
+                let value: Option<Arc<str>> = value.then(|| Arc::from(format!("v{now}")));
+                let out = table
+                    .event_set(
+                        ms(now),
+                        EventSetRequest {
+                            name: name.into(),
+                            value: value.clone(),
+                            publish_for: publish.map(|p| ms(u64::from(p))),
+                        },
+                    )
+                    .expect("a valid set cannot fail");
+                assert_eq!(
+                    out.woken,
+                    waiting.len(),
+                    "woke a different number than were waiting"
+                );
+                assert!(
+                    out.id > last_token,
+                    "publication id {} not above the last token {last_token}",
+                    out.id
+                );
+                last_token = out.id;
+                last_set_id = out.id;
+
+                let window = publish.map_or(DEFAULT_PUBLISH_MS, u64::from);
+                assert_eq!(out.publish_for, ms(window));
+                if window == 0 {
+                    model.remove(name);
+                } else {
+                    model.insert(
+                        name,
+                        ModelPublication {
+                            id: out.id,
+                            until: now + window,
+                        },
+                    );
+                }
+
+                let mut woken: BTreeSet<(u64, u64)> = BTreeSet::new();
+                for e in table.take_events() {
+                    match e {
+                        Event::Granted { grant, .. } => {
+                            // Time-driven grants that came before the set: tokens still increase.
+                            assert!(
+                                grant.token.0 < out.id,
+                                "a grant from before the set has a later token"
+                            );
+                        }
+                        Event::Published {
+                            session,
+                            request,
+                            name: n,
+                            publication,
+                        } => {
+                            assert_eq!(&*n, name);
+                            assert_eq!(publication.id, out.id);
+                            assert_eq!(publication.value, value);
+                            assert_eq!(publication.age, Duration::ZERO);
+                            woken.insert((session.0, request.0));
+                        }
+                        _ => {}
+                    }
+                }
+                assert_eq!(woken, waiting, "the wrong clients were woken");
+            }
             Op::Cancel { session, pick } => {
                 let sid = SessionId(u64::from(session));
                 let view = table.session_view(ms(now), sid);
                 let mut requests: Vec<RequestId> = view.held.iter().map(|h| h.request).collect();
                 requests.extend(view.pending.iter().map(|p| p.request));
+                requests.extend(view.pending_events.iter().map(|p| p.request));
                 if !requests.is_empty() {
                     let req = requests[usize::from(pick) % requests.len()];
                     assert_ne!(table.cancel(ms(now), sid, req), CancelOutcome::NotFound);
@@ -232,6 +397,7 @@ fn run(ops: Vec<Op>) {
         table.stats(),
         Stats {
             entries: 0,
+            events: 0,
             sessions: 0,
             timers: 0
         },

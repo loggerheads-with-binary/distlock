@@ -890,6 +890,7 @@ fn everything_drains_to_empty() {
         h.t.stats(),
         Stats {
             entries: 0,
+            events: 0,
             sessions: 0,
             timers: 0
         }

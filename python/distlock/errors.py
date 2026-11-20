@@ -42,7 +42,7 @@ class SessionLost(DistLockError):
 
 
 class LockTimeout(DistLockError, TimeoutError):
-    """The lock was not obtained within the wait limit."""
+    """The lock was not obtained, or the event was not set, within the wait limit."""
 
 
 class LockBusy(DistLockError):

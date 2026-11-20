@@ -1,0 +1,17 @@
+component_management:
+  individual_components:
+    - component_id: distlock-proto
+      name: distlock-proto
+      paths: [crates/distlock-proto/**]
+    - component_id: distlock-core
+      name: distlock-core
+      paths: [crates/distlock-core/**]
+    - component_id: distlock-client
+      name: distlock-client
+      paths: [crates/distlock-client/**]
+    - component_id: distlock-server
+      name: distlock-server
+      paths: [crates/distlock-server/**]
+    - component_id: pydistlock
+      name: pydistlock
+      paths: [python/distlock/**]

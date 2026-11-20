@@ -11,6 +11,7 @@ use tokio::runtime::{Builder, Runtime};
 
 use crate::client::DistLockClient;
 use crate::error::{Error, Result};
+use crate::event::{EventSet, EventWait, Published, SetResult};
 use crate::lock::{Acquire, Kind, Previous, State};
 use crate::maintenance::ResetUsersReport;
 
@@ -58,6 +59,16 @@ impl Client {
                 inner: Some(lock),
                 rt: Arc::clone(&self.rt),
             }))
+    }
+
+    /// Block until an event is set; see [`crate::Client::wait_event`].
+    pub fn wait_event(&self, w: EventWait) -> Result<Published> {
+        self.rt.block_on(self.inner.wait_event(w))
+    }
+
+    /// Set an event; see [`crate::Client::set_event`] (including why it is not retried).
+    pub fn set_event(&self, s: EventSet) -> Result<SetResult> {
+        self.rt.block_on(self.inner.set_event(s))
     }
 
     /// Administrative commands, such as reloading the server's users file.

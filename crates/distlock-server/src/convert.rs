@@ -110,6 +110,22 @@ pub(crate) fn view_to_pb(view: core::SessionView) -> pb::SessionView {
                 mode: mode_to_pb(p.want) as i32,
             })
             .collect(),
+        pending_events: view
+            .pending_events
+            .into_iter()
+            .map(|p| pb::PendingEvent {
+                request_id: p.request.0,
+                name: p.name.to_string(),
+            })
+            .collect(),
+    }
+}
+
+pub(crate) fn publication_to_pb(p: &core::Publication) -> pb::Publication {
+    pb::Publication {
+        id: p.id,
+        value: p.value.as_deref().map(str::to_owned),
+        age_ms: ms(p.age),
     }
 }
 

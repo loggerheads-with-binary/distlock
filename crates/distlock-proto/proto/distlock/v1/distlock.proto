@@ -24,6 +24,8 @@ message ClientFrame {
     CloseSession close_session = 16;
     Ping ping = 17;
     Maintenance maintenance = 18;
+    EventWait event_wait = 19;
+    EventSet event_set = 20;
   }
 }
 
@@ -41,12 +43,15 @@ message ServerFrame {
     CloseSessionOk close_session_ok = 17;
     Pong pong = 18;
     MaintenanceOk maintenance_ok = 19;
+    EventWaitOk event_wait_ok = 20;
+    EventSetOk event_set_ok = 21;
 
     // Pushes. May be delivered on ANY connection attached to the session.
     Granted granted = 30;
-    WaitTimedOut wait_timed_out = 31;
+    WaitTimedOut wait_timed_out = 31;   // also ends a timed-out EventWait
     LeaseExpired lease_expired = 32;
     Shutdown shutdown = 33;
+    EventPublished event_published = 34;
   }
 }
 
@@ -120,6 +125,12 @@ message AttachOk {
 message SessionView {
   repeated HeldLock held = 1;
   repeated PendingRequest pending = 2;
+  repeated PendingEvent pending_events = 3;   // EventWaits still registered
+}
+
+message PendingEvent {
+  uint64 request_id = 1;
+  string name = 2;
 }
 
 message HeldLock {
@@ -219,6 +230,57 @@ message ExtendResult {
   uint32 ttl_remaining_ms = 4;
 }
 
+// ---------------------------------------------------------------- events
+//
+// A named broadcast, like asyncio.Event but with a limited memory. Any number of clients wait on a
+// name; one client sets it, which wakes every client waiting at that moment and returns how many
+// there were. For `publish_ms` after the set, the event stays *published*: a wait that arrives in
+// that window returns at once with the same value. After the window the event is gone, and waiters
+// wait for the next set. `publish_ms = 0` wakes only the clients already waiting.
+//
+// Waits belong to the session: they are cancelled with CancelAcquire (same request_id space as
+// Acquire), vanish when the session ends, and are listed in SessionView.pending_events so a client
+// that reconnects can tell whether its wait is still registered. A set is not idempotent: the client
+// does not retry it after a connection fails, and reports that the outcome is unknown instead.
+
+message EventWait {
+  uint64 request_id = 1;           // client-chosen, unique per session (shared with Acquire)
+  string name = 2;
+  uint32 wait_ms = 3;              // max time to wait; 0 = only an already-published event satisfies it
+  // Only a publication with an id greater than this satisfies the wait. Lets a consumer that loops
+  // on one event skip the publication it already handled while that is still inside its window.
+  uint64 after_id = 4;
+}
+
+message EventWaitOk {
+  oneof outcome {
+    Publication published = 1;     // satisfied immediately by an event inside its publish window
+    Queued queued = 2;             // wait for an `EventPublished` / `WaitTimedOut` push
+  }
+}
+
+message Publication {
+  // From the same strictly increasing counter as fencing tokens, so ids never repeat or go back,
+  // even across server restarts.
+  uint64 id = 1;
+  optional string value = 2;       // absent when the event was set without a value
+  uint32 age_ms = 3;               // time since the set; 0 for a waiter woken by the set itself
+}
+
+message EventSet {
+  string name = 1;
+  optional string value = 2;
+  // How long after this set the event counts as published. Absent = the server default.
+  // 0 = wake only the waiters present now. Capped by the server.
+  optional uint32 publish_ms = 3;
+}
+
+message EventSetOk {
+  uint32 woken = 1;                // clients that were waiting and have been woken by this set
+  uint64 publication_id = 2;
+  uint32 publish_ms = 3;           // the window the server applied
+}
+
 // ---------------------------------------------------------------- maintenance
 //
 // Administrative commands. There is no per-user authorization yet, so any authenticated client may
@@ -282,6 +344,13 @@ message WaitTimedOut {
 message LeaseExpired {
   string name = 1;
   uint64 fencing_token = 2;
+}
+
+// A queued EventWait was satisfied.
+message EventPublished {
+  uint64 request_id = 1;
+  string name = 2;
+  Publication publication = 3;
 }
 
 // The server is draining. Finish up, then reconnect elsewhere / later and Attach.

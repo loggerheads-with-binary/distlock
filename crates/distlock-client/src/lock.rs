@@ -55,9 +55,14 @@ impl Kind {
 /// The name the server sees: `namespace:family:name`. The family keeps mutexes, read/write locks
 /// and semaphores apart; the namespace keeps applications apart.
 pub(crate) fn wire_name(namespace: Option<&str>, kind: Kind, name: &str) -> String {
+    family_name(namespace, kind.tag(), name)
+}
+
+/// `namespace:family:name`, or `family:name` without a namespace.
+pub(crate) fn family_name(namespace: Option<&str>, family: &str, name: &str) -> String {
     match namespace {
-        Some(ns) => format!("{ns}:{}:{name}", kind.tag()),
-        None => format!("{}:{name}", kind.tag()),
+        Some(ns) => format!("{ns}:{family}:{name}"),
+        None => format!("{family}:{name}"),
     }
 }
 

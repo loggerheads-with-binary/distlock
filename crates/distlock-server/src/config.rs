@@ -177,6 +177,34 @@ impl ServerConfig {
                 "must not exceed DISTLOCK_MAX_STATE_TTL_MS",
             ));
         }
+        let event_default_publish = millis(
+            get,
+            "DISTLOCK_EVENT_DEFAULT_PUBLISH_MS",
+            core.event_default_publish,
+        )?;
+        let event_max_publish =
+            millis(get, "DISTLOCK_EVENT_MAX_PUBLISH_MS", core.event_max_publish)?;
+        if event_default_publish > event_max_publish {
+            return Err(err(
+                "DISTLOCK_EVENT_DEFAULT_PUBLISH_MS",
+                "must not exceed DISTLOCK_EVENT_MAX_PUBLISH_MS",
+            ));
+        }
+        let max_event_value_len = at_least(
+            "DISTLOCK_MAX_EVENT_VALUE_BYTES",
+            parse(
+                get,
+                "DISTLOCK_MAX_EVENT_VALUE_BYTES",
+                core.max_event_value_len,
+            )?,
+            1,
+        )?;
+        if max_event_value_len > max_frame_bytes / 2 {
+            return Err(err(
+                "DISTLOCK_MAX_EVENT_VALUE_BYTES",
+                "must be at most half of DISTLOCK_MAX_FRAME_BYTES",
+            ));
+        }
         let lock = LockConfig {
             max_ttl,
             max_wait: positive_millis(get, "DISTLOCK_MAX_WAIT_MS", core.max_wait)?,
@@ -210,6 +238,9 @@ impl ServerConfig {
             // The core defaults to no grace period; the server defaults to one full lease.
             startup_grace: millis(get, "DISTLOCK_STARTUP_GRACE_MS", max_ttl)?,
             token_floor: core.token_floor,
+            event_default_publish,
+            event_max_publish,
+            max_event_value_len,
         };
 
         let log_format = match raw(get, "DISTLOCK_LOG_FORMAT").as_deref() {
@@ -389,6 +420,42 @@ mod tests {
         ]))
         .unwrap_err();
         assert_eq!(e.var, "DISTLOCK_DEFAULT_STATE_TTL_MS");
+
+        let e = ServerConfig::from_lookup(lookup(&[
+            ("DISTLOCK_EVENT_DEFAULT_PUBLISH_MS", "5000"),
+            ("DISTLOCK_EVENT_MAX_PUBLISH_MS", "1000"),
+        ]))
+        .unwrap_err();
+        assert_eq!(e.var, "DISTLOCK_EVENT_DEFAULT_PUBLISH_MS");
+
+        // A value must fit in a frame with room to spare.
+        let e = ServerConfig::from_lookup(lookup(&[
+            ("DISTLOCK_MAX_FRAME_BYTES", "4096"),
+            ("DISTLOCK_MAX_EVENT_VALUE_BYTES", "4096"),
+        ]))
+        .unwrap_err();
+        assert_eq!(e.var, "DISTLOCK_MAX_EVENT_VALUE_BYTES");
+        let e = ServerConfig::from_lookup(lookup(&[("DISTLOCK_MAX_EVENT_VALUE_BYTES", "0")]))
+            .unwrap_err();
+        assert_eq!(e.var, "DISTLOCK_MAX_EVENT_VALUE_BYTES");
+    }
+
+    #[test]
+    fn event_settings_have_the_documented_defaults_and_can_be_overridden() {
+        let c = ServerConfig::default();
+        assert_eq!(c.lock.event_default_publish, Duration::from_secs(10));
+        assert_eq!(c.lock.event_max_publish, Duration::from_secs(600));
+        assert_eq!(c.lock.max_event_value_len, 4096);
+
+        let c = ServerConfig::from_lookup(lookup(&[
+            ("DISTLOCK_EVENT_DEFAULT_PUBLISH_MS", "0"),
+            ("DISTLOCK_EVENT_MAX_PUBLISH_MS", "30000"),
+            ("DISTLOCK_MAX_EVENT_VALUE_BYTES", "100"),
+        ]))
+        .unwrap();
+        assert_eq!(c.lock.event_default_publish, Duration::ZERO);
+        assert_eq!(c.lock.event_max_publish, Duration::from_secs(30));
+        assert_eq!(c.lock.max_event_value_len, 100);
     }
 
     #[test]
