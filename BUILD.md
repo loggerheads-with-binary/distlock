@@ -8,7 +8,7 @@ Four Rust crates (one workspace) and one Python package (`python/`, its own buil
 | `crates/distlock-core` | the lock-table state machine | crates.io, docs.rs |
 | `crates/distlock-client` | async + blocking Rust client | crates.io, docs.rs |
 | `crates/distlock-server` | the server binary (`distlock-server`) | crates.io (`cargo install`), or release binaries |
-| `python/` (`distlock`) | PyO3 wheel over the Rust client | PyPI |
+| `python/` (`pydistlock`, imports as `distlock`) | PyO3 wheel over the Rust client | PyPI |
 
 ## Prerequisites
 

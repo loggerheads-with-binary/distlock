@@ -1,0 +1,71 @@
+name: Coverage
+# Kept out of ci.yml because the release workflow reuses ci.yml, and a coverage upload problem
+# must never block a release. One-time setup: add the repo to codecov.io and store its upload
+# token as the repository secret CODECOV_TOKEN.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+concurrency:
+  group: coverage-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  rust:
+    name: rust coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Install htpasswd (the tests make bcrypt hashes with it)
+        run: sudo apt-get update && sudo apt-get install -y apache2-utils
+      - run: cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
+      - name: Summary
+        run: cargo llvm-cov report >> "$GITHUB_STEP_SUMMARY"
+      - uses: codecov/codecov-action@v5
+        with:
+          files: lcov.info
+          flags: rust
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+  python:
+    name: python coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            python
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install htpasswd
+        run: sudo apt-get update && sudo apt-get install -y apache2-utils
+      - name: Build the server the tests start
+        run: cargo build -p distlock-server --locked
+      - name: Build, install and test with coverage
+        working-directory: python
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          pip install maturin pytest pytest-cov "pydantic>=2.5"
+          maturin develop
+          pytest --cov=distlock --cov-report=xml --cov-report=term-missing
+          coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
+      - uses: codecov/codecov-action@v5
+        with:
+          files: python/coverage.xml
+          flags: python
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
