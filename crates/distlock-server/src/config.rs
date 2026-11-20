@@ -19,6 +19,9 @@ pub enum LogFormat {
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub bind_addr: SocketAddr,
+    /// PEM certificate chain and private key. Both set means every connection speaks TLS.
+    pub tls_cert_file: Option<PathBuf>,
+    pub tls_key_file: Option<PathBuf>,
     pub max_connections: usize,
     pub max_frame_bytes: usize,
     pub handshake_timeout: Duration,
@@ -105,6 +108,14 @@ impl ServerConfig {
             "DISTLOCK_BIND_ADDR",
             SocketAddr::from(([127, 0, 0, 1], 7878)),
         )?;
+        let tls_cert_file = raw(get, "DISTLOCK_TLS_CERT_FILE").map(PathBuf::from);
+        let tls_key_file = raw(get, "DISTLOCK_TLS_KEY_FILE").map(PathBuf::from);
+        if tls_cert_file.is_some() != tls_key_file.is_some() {
+            return Err(err(
+                "DISTLOCK_TLS_CERT_FILE",
+                "DISTLOCK_TLS_CERT_FILE and DISTLOCK_TLS_KEY_FILE must be set together",
+            ));
+        }
         let max_connections = at_least(
             "DISTLOCK_MAX_CONNECTIONS",
             parse(get, "DISTLOCK_MAX_CONNECTIONS", 10_000)?,
@@ -256,6 +267,8 @@ impl ServerConfig {
 
         Ok(Self {
             bind_addr,
+            tls_cert_file,
+            tls_key_file,
             max_connections,
             max_frame_bytes,
             handshake_timeout,
@@ -281,7 +294,7 @@ impl ServerConfig {
                 self.lock.max_ttl.as_millis()
             ));
         }
-        if self.bind_addr.ip().is_unspecified() {
+        if self.bind_addr.ip().is_unspecified() && self.tls_cert_file.is_none() {
             out.push(format!(
                 "listening on {} (all interfaces) with no TLS: credentials and traffic are readable on the wire. \
                  Bind to a private interface.",
@@ -463,5 +476,17 @@ mod tests {
         let c =
             ServerConfig::from_lookup(lookup(&[("DISTLOCK_BIND_ADDR", "0.0.0.0:7878")])).unwrap();
         assert!(c.warnings().iter().any(|w| w.contains("no TLS")));
+        let tls = [
+            ("DISTLOCK_BIND_ADDR", "0.0.0.0:7878"),
+            ("DISTLOCK_TLS_CERT_FILE", "c.pem"),
+            ("DISTLOCK_TLS_KEY_FILE", "k.pem"),
+        ];
+        assert!(
+            ServerConfig::from_lookup(lookup(&tls))
+                .unwrap()
+                .warnings()
+                .is_empty()
+        );
+        assert!(ServerConfig::from_lookup(lookup(&tls[..2])).is_err());
     }
 }

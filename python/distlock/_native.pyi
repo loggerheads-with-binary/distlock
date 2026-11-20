@@ -41,6 +41,8 @@ class NativeClient:
         namespace: Optional[str],
         pool_size: int,
         tls: bool,
+        tls_verify: bool,
+        tls_ca_file: Optional[str],
         default_ttl: float,
     ) -> None: ...
     @property

@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, f
 from .errors import ConfigError
 
 _SCHEME = "distlock"
-_QUERY_PARAMETERS = ("pool_size", "tls", "default_ttl")
+_QUERY_PARAMETERS = ("pool_size", "tls", "tls_verify", "tls_ca_file", "default_ttl")
 #: The server counts leases in 32-bit milliseconds.
 _MAX_TTL_SECONDS = 4_000_000.0
 
@@ -41,8 +41,13 @@ class ClientSettings(BaseModel):
     namespace: Optional[str] = None
     #: TCP connections in the pool. They all belong to one session.
     pool_size: int = Field(default=4, ge=1, le=256)
-    #: TLS is not supported by the server yet; ``True`` is rejected when connecting.
+    #: Encrypt connections with TLS (the server needs a certificate configured).
     tls: bool = False
+    #: Check the server's certificate against ``host``. ``False`` still encrypts but accepts any
+    #: certificate, so it does not stop a man in the middle. Only used when ``tls`` is set.
+    tls_verify: bool = True
+    #: PEM file of the CA (or self-signed server certificate) to trust. ``None``: the public web roots.
+    tls_ca_file: Optional[str] = None
     #: Lease length, in seconds, for locks that do not set their own ``ttl``.
     default_ttl: float = Field(default=30.0, gt=0, le=_MAX_TTL_SECONDS)
 
@@ -57,7 +62,7 @@ class ClientSettings(BaseModel):
 
     @classmethod
     def from_url(cls, url: str) -> "ClientSettings":
-        """Parse ``distlock://client_id:password@host[:port][/namespace][?pool_size=&tls=&default_ttl=]``.
+        """Parse ``distlock://client_id:password@host[:port][/namespace][?pool_size=&tls=&tls_verify=&tls_ca_file=&default_ttl=]``.
 
         User and password may be percent-encoded. The path, if any, is the namespace (one segment).
         ``default_ttl`` is in seconds. Unknown query parameters are an error, not ignored.

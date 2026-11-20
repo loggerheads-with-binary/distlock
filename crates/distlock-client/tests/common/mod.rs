@@ -159,6 +159,8 @@ pub fn client_for(addr: SocketAddr, user: &str) -> DistLockClient {
         namespace: None,
         pool_size: 2,
         tls: false,
+        tls_verify: true,
+        tls_ca_file: None,
         default_ttl: Duration::from_secs(30),
     }
 }

@@ -67,7 +67,9 @@ lock.release_with(Some(State::Succeeded), None).await?;
 
 ## Things to know before you deploy
 
-* **No TLS yet.** Bind the server to a private interface. Never expose it on an untrusted network.
+* **TLS is optional.** Set `DISTLOCK_TLS_CERT_FILE` and `DISTLOCK_TLS_KEY_FILE` on the server and `tls=true` on
+  clients. Clients can skip certificate checks (`tls_verify=false`) while there is no trusted certificate; that
+  encrypts but does not authenticate the server. Without TLS, bind to a private interface only.
 * **State is in memory.** After a restart the server refuses lock requests for `DISTLOCK_STARTUP_GRACE_MS`
   so that leases from the old process run out. Keep that value at or above `DISTLOCK_MAX_TTL_MS`.
 * **Use fencing tokens.** Every grant carries a strictly increasing token. Pass it to the resource you

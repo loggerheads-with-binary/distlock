@@ -61,7 +61,9 @@ client = DistLockClient(client_id="billing", password="s3cret", host="10.0.0.5",
 | `/namespace` | prefix for every lock name (`namespace:...`), to keep applications apart | none |
 | `pool_size` | TCP connections (1–256); they all share one session | `4` |
 | `default_ttl` | lease length in seconds for locks that do not set `ttl` | `30` |
-| `tls` | not supported by the server yet; `true` raises `ConfigError` | `false` |
+| `tls` | encrypt with TLS (the server needs a certificate) | `false` |
+| `tls_verify` | check the server certificate against the host. `false` encrypts but accepts any certificate, so it does not stop a man in the middle | `true` |
+| `tls_ca_file` | PEM file of the CA or self-signed certificate to trust; unset means the public web roots | none |
 
 URLs are parsed with `urllib` and validated with pydantic ([`ClientSettings`](https://github.com/loggerheads-with-binary/distlock/blob/main/python/distlock/settings.py));
 mistakes raise `ConfigError` with a message that never contains the password.

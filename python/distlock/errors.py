@@ -71,7 +71,6 @@ class ServerError(DistLockError):
 
 _BY_KIND: Dict[str, Type[DistLockError]] = {
     "config": ConfigError,
-    "tls_unsupported": ConfigError,
     "invalid_argument": InvalidArgument,
     "auth": AuthenticationError,
     "connect": ConnectionFailed,

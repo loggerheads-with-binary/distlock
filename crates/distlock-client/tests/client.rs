@@ -101,8 +101,12 @@ async fn bad_settings_are_rejected_before_connecting() {
             other => panic!("{what}: expected a Config error, got {other:?}"),
         }
     }
-    let tls = DistLockClient { tls: true, ..base };
-    assert!(matches!(tls.connect().await, Err(Error::TlsUnsupported)));
+    let missing = DistLockClient {
+        tls: true,
+        tls_ca_file: Some("/nonexistent/ca.pem".into()),
+        ..base
+    };
+    assert!(matches!(missing.connect().await, Err(Error::Config(m)) if m.contains("tls_ca_file")));
 }
 
 #[tokio::test]

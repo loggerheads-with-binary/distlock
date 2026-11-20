@@ -2,6 +2,7 @@
 
 use std::io;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -9,6 +10,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use distlock_core::LockTable;
 use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, mpsc};
+use tokio_rustls::TlsAcceptor;
+use tokio_rustls::rustls;
+use tokio_rustls::rustls::pki_types::pem::PemObject;
+use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
@@ -32,6 +37,7 @@ pub struct Server {
 impl Server {
     /// Bind the listening socket and build the engine. Nothing is served until [`run`](Self::run).
     pub async fn bind(cfg: ServerConfig, users: UserDb) -> io::Result<Self> {
+        let tls = load_tls(&cfg)?;
         let listener = TcpListener::bind(cfg.bind_addr).await?;
         let mut lock_cfg = cfg.lock.clone();
         // Fencing tokens must keep increasing across restarts of this memory-only server.
@@ -50,6 +56,7 @@ impl Server {
             users,
             actor: tx,
             next_conn: AtomicU64::new(1),
+            tls,
         });
         Ok(Self {
             listener,
@@ -111,6 +118,24 @@ impl Server {
     }
 }
 
+/// Build the TLS acceptor when a certificate and key are configured.
+fn load_tls(cfg: &ServerConfig) -> io::Result<Option<TlsAcceptor>> {
+    let (Some(cert), Some(key)) = (&cfg.tls_cert_file, &cfg.tls_key_file) else {
+        return Ok(None);
+    };
+    let ctx = |what: &str, path: &Path, e: &dyn std::fmt::Display| {
+        io::Error::other(format!("TLS {what} {}: {e}", path.display()))
+    };
+    let certs = CertificateDer::pem_file_iter(cert)
+        .and_then(Iterator::collect::<Result<Vec<_>, _>>)
+        .map_err(|e| ctx("certificate", cert, &e))?;
+    let key = PrivateKeyDer::from_pem_file(key).map_err(|e| ctx("key", key, &e))?;
+    let config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|e| io::Error::other(format!("TLS certificate and key do not fit: {e}")))?;
+    Ok(Some(TlsAcceptor::from(Arc::new(config))))
+}
 fn wall_clock_micros() -> u64 {
     let micros = SystemTime::now()
         .duration_since(UNIX_EPOCH)

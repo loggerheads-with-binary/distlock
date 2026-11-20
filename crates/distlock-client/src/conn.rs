@@ -11,7 +11,7 @@ use distlock_proto::v1 as pb;
 use distlock_proto::v1::{client_frame as cf, server_frame as sf};
 use futures_util::{SinkExt, StreamExt};
 use prost::Message;
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 use tokio_util::sync::CancellationToken;
@@ -20,8 +20,11 @@ use tracing::debug;
 use crate::client::Inner;
 use crate::error::{Error, Result};
 
-pub(crate) type Reader = FramedRead<OwnedReadHalf, LengthDelimitedCodec>;
-pub(crate) type Writer = FramedWrite<OwnedWriteHalf, LengthDelimitedCodec>;
+/// A plain or TLS stream.
+pub(crate) trait Io: AsyncRead + AsyncWrite + Send + Unpin {}
+impl<T: AsyncRead + AsyncWrite + Send + Unpin> Io for T {}
+pub(crate) type Reader = FramedRead<ReadHalf<Box<dyn Io>>, LengthDelimitedCodec>;
+pub(crate) type Writer = FramedWrite<WriteHalf<Box<dyn Io>>, LengthDelimitedCodec>;
 
 /// How long a reply may take before the connection is considered dead.
 pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);

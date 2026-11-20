@@ -25,11 +25,12 @@ use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use crate::conn::{Conn, REQUEST_TIMEOUT, Reader, Writer, tune_socket};
+use crate::conn::{Conn, Io, REQUEST_TIMEOUT, Reader, Writer, tune_socket};
 use crate::error::{Error, Result};
 use crate::event::{EventSet, EventWait, Published, SetResult};
 use crate::lock::{Acquire, Kind, Lock, Previous, State, family_name, wire_name};
 use crate::maintenance::{Maintenance, protocol};
+use crate::tls::{self, Tls};
 
 const PROTOCOL_VERSION: u32 = 1;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -65,6 +66,8 @@ const MAINTENANCE_TIMEOUT: Duration = Duration::from_secs(60);
 ///     namespace: Some("billing".into()),
 ///     pool_size: 4,
 ///     tls: false,
+///     tls_verify: true,
+///     tls_ca_file: None,
 ///     default_ttl: Duration::from_secs(30),
 /// }
 /// .connect()
@@ -81,8 +84,15 @@ pub struct DistLockClient {
     pub namespace: Option<String>,
     /// TCP connections in the pool (1..=256). They all belong to one session.
     pub pool_size: usize,
-    /// Not supported by the server yet: `true` fails with [`Error::TlsUnsupported`].
+    /// Encrypt connections with TLS. The server must have a certificate configured.
     pub tls: bool,
+    /// Check the server's certificate against `host` (a DNS name or an IP address that the
+    /// certificate lists). `false` still encrypts but accepts any certificate, so it does not stop a
+    /// man in the middle. Only used when `tls` is set.
+    pub tls_verify: bool,
+    /// PEM file with the CA certificate(s) to trust, for a private CA or a self-signed server
+    /// certificate. `None`: the public web roots. Only used when `tls` and `tls_verify` are set.
+    pub tls_ca_file: Option<std::path::PathBuf>,
     /// Lease length for acquires that do not set their own `ttl`.
     pub default_ttl: Duration,
 }
@@ -97,6 +107,8 @@ impl Default for DistLockClient {
             namespace: None,
             pool_size: 4,
             tls: false,
+            tls_verify: true,
+            tls_ca_file: None,
             default_ttl: Duration::from_secs(30),
         }
     }
@@ -112,6 +124,8 @@ impl std::fmt::Debug for DistLockClient {
             .field("namespace", &self.namespace)
             .field("pool_size", &self.pool_size)
             .field("tls", &self.tls)
+            .field("tls_verify", &self.tls_verify)
+            .field("tls_ca_file", &self.tls_ca_file)
             .field("default_ttl", &self.default_ttl)
             .finish()
     }
@@ -126,14 +140,12 @@ pub(crate) struct Settings {
     pub(crate) namespace: Option<String>,
     pool_size: usize,
     pub(crate) default_ttl: Duration,
+    tls: Option<Tls>,
 }
 
 impl DistLockClient {
     pub(crate) fn into_settings(self) -> Result<Settings> {
         let bad = |m: &str| Err(Error::Config(m.to_owned()));
-        if self.tls {
-            return Err(Error::TlsUnsupported);
-        }
         if self.client_id.is_empty() || self.client_id.len() > 128 {
             return bad("client_id must be 1-128 bytes");
         }
@@ -158,6 +170,15 @@ impl DistLockClient {
         if namespace.as_deref().is_some_and(|n| n.contains(':')) {
             return bad("namespace must not contain ':'");
         }
+        let tls = if self.tls {
+            Some(tls::build(
+                &self.host,
+                self.tls_verify,
+                self.tls_ca_file.as_deref(),
+            )?)
+        } else {
+            None
+        };
         Ok(Settings {
             client_id: self.client_id,
             password: self.password,
@@ -166,6 +187,7 @@ impl DistLockClient {
             namespace,
             pool_size: self.pool_size,
             default_ttl: self.default_ttl,
+            tls,
         })
     }
 
@@ -607,12 +629,25 @@ impl Inner {
             Err(_) => return Err(Fail::Transient("connection timed out".into())),
         };
         tune_socket(&stream);
+        let stream: Box<dyn Io> = match &self.settings.tls {
+            None => Box::new(stream),
+            Some(t) => {
+                let accepted = t.connector.connect(t.server_name.clone(), stream);
+                match tokio::time::timeout(CONNECT_TIMEOUT, accepted).await {
+                    Ok(Ok(s)) => Box::new(s),
+                    Ok(Err(e)) => {
+                        return Err(Fail::Transient(format!("TLS handshake failed: {e}")));
+                    }
+                    Err(_) => return Err(Fail::Transient("TLS handshake timed out".into())),
+                }
+            }
+        };
         let codec = LengthDelimitedCodec::builder()
             .big_endian()
             .length_field_length(4)
             .max_frame_length(MAX_FRAME)
             .new_codec();
-        let (read_half, write_half) = stream.into_split();
+        let (read_half, write_half) = tokio::io::split(stream);
         let mut reader: Reader = FramedRead::new(read_half, codec.clone());
         let mut sink: Writer = FramedWrite::new(write_half, codec);
 

@@ -46,7 +46,10 @@ cargo install distlock-server
 
 ## Before you deploy
 
-* **There is no TLS yet.** Bind to a private interface. Never expose the port on an untrusted network.
+* **TLS is optional and off by default.** Set `DISTLOCK_TLS_CERT_FILE` and `DISTLOCK_TLS_KEY_FILE` to turn it
+  on (`scripts/gen-self-signed-cert.sh <ip>` makes a self-signed pair). Without it, bind to a private
+  interface and never expose the port on an untrusted network. Clients that set `tls_verify=false` get
+  encryption but no protection against a man in the middle; give them the certificate as `tls_ca_file` when you can.
 * **State is in memory.** After a restart the server refuses lock requests for `DISTLOCK_STARTUP_GRACE_MS`,
   so that leases from the old process run out. Keep it at or above `DISTLOCK_MAX_TTL_MS`.
 * Edit the users file and send a `reset_users` maintenance command (from the Python or Rust client) to

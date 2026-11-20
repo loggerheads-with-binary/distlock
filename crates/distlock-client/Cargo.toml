@@ -20,12 +20,15 @@ getrandom = "0.4.3"
 prost = "0.14.6"
 socket2 = { version = "0.6.5", features = ["all"] }
 thiserror = "2.0.21"
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
 tokio-util = { version = "0.7.20", features = ["codec"] }
 tracing = "0.1.44"
+webpki-roots = "1.0.12"
 
 [dev-dependencies]
 bcrypt = "0.19.3"
 distlock-server = { path = "../distlock-server" }
+rcgen = "0.14.10"
 serde_json = "1.0.154"
 tempfile = "3.27.0"

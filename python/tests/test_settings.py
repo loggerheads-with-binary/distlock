@@ -115,9 +115,11 @@ def test_the_client_can_be_built_from_keywords_and_validates_them():
         DistLockClient(ClientSettings.from_url(FULL), client_id="a")
 
 
-def test_tls_is_refused_up_front_because_the_server_has_none_yet():
-    with pytest.raises(ConfigError, match="tls"):
-        DistLockClient.from_url("distlock://a:b@h?tls=true")
+def test_tls_options_come_from_the_url():
+    s = ClientSettings.from_url("distlock://a:b@10.0.0.5?tls=true&tls_verify=false&tls_ca_file=/etc/ca.pem")
+    assert (s.tls, s.tls_verify, s.tls_ca_file) == (True, False, "/etc/ca.pem")
+    s = ClientSettings.from_url("distlock://a:b@h")
+    assert (s.tls, s.tls_verify, s.tls_ca_file) == (False, True, None)
 
 
 def test_from_env(monkeypatch):
