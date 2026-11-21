@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use distlock_client::{
     Acquire, Client, DistLockClient, Error, EventSet, EventWait, Kind, Lock, Lost, Published,
-    ResetUsersReport, SetResult, State,
+    ResetUsersReport, ServerStats, SetResult, State,
 };
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
@@ -111,6 +111,67 @@ fn reset_tuple(r: ResetUsersReport) -> ResetTuple {
         r.sessions_closed,
         r.connections_closed,
         r.invoker_dropped,
+    )
+}
+
+/// `(total_memory, used_memory, cpu_count, cpu_percent, load_1m, load_5m, load_15m)`.
+type SystemTuple = (u64, u64, u32, f64, Option<f64>, Option<f64>, Option<f64>);
+/// `(pid, cpu_percent, memory, virtual_memory, cpu_time_ms, open_files, open_files_limit)`.
+type ProcessTuple = (
+    u32,
+    f64,
+    Option<u64>,
+    Option<u64>,
+    Option<u64>,
+    Option<u64>,
+    Option<u64>,
+);
+/// `(counters, system, process)`; counters are `(version, uptime_ms, connections, sessions,
+/// connected_clients, locks_held, requests_queued, lock_names, events, in_startup_grace,
+/// startup_grace_remaining_ms)`. Nested because PyO3 converts tuples of at most 12 items.
+type StatsTuple = (
+    (String, u64, u32, u32, u32, u32, u32, u32, u32, bool, u32),
+    Option<SystemTuple>,
+    Option<ProcessTuple>,
+);
+
+fn stats_tuple(s: ServerStats) -> StatsTuple {
+    (
+        (
+            s.version,
+            s.uptime_ms,
+            s.connections,
+            s.sessions,
+            s.connected_clients,
+            s.locks_held,
+            s.requests_queued,
+            s.lock_names,
+            s.events,
+            s.in_startup_grace,
+            s.startup_grace_remaining_ms,
+        ),
+        s.system.map(|y| {
+            (
+                y.total_memory_bytes,
+                y.used_memory_bytes,
+                y.cpu_count,
+                y.cpu_percent,
+                y.load_avg_1m,
+                y.load_avg_5m,
+                y.load_avg_15m,
+            )
+        }),
+        s.process.map(|p| {
+            (
+                p.pid,
+                p.cpu_percent,
+                p.memory_bytes,
+                p.virtual_memory_bytes,
+                p.cpu_time_ms,
+                p.open_files,
+                p.open_files_limit,
+            )
+        }),
     )
 }
 
@@ -275,6 +336,21 @@ impl NativeClient {
         report.map(reset_tuple).map_err(err)
     }
 
+    /// The server's health figures. See `distlock.DistLockClient.stats`.
+    fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let cell = Arc::clone(&self.cell);
+        future_into_py(py, async move {
+            let client = cell.get().await.map_err(err)?;
+            client.stats().await.map(stats_tuple).map_err(err)
+        })
+    }
+
+    fn stats_sync(&self, py: Python<'_>) -> PyResult<StatsTuple> {
+        let cell = Arc::clone(&self.cell);
+        let stats = block_on(py, async move { cell.get().await?.stats().await })?;
+        stats.map(stats_tuple).map_err(err)
+    }
+
     /// Pool connections that are up right now.
     #[getter]
     fn connections(&self) -> usize {
@@ -434,7 +510,10 @@ impl NativeClient {
     ) -> PyResult<PublishedTuple> {
         let request = build_event_wait(name, timeout, after, namespace)?;
         let cell = Arc::clone(&self.cell);
-        let published = block_on(py, async move { cell.get().await?.wait_event(request).await })?;
+        let published = block_on(
+            py,
+            async move { cell.get().await?.wait_event(request).await },
+        )?;
         published.map(published_tuple).map_err(err)
     }
 
@@ -467,7 +546,10 @@ impl NativeClient {
     ) -> PyResult<SetTuple> {
         let request = build_event_set(name, value, publish_for, namespace)?;
         let cell = Arc::clone(&self.cell);
-        let result = block_on(py, async move { cell.get().await?.set_event(request).await })?;
+        let result = block_on(
+            py,
+            async move { cell.get().await?.set_event(request).await },
+        )?;
         result.map(set_tuple).map_err(err)
     }
 

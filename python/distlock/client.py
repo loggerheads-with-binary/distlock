@@ -13,6 +13,7 @@ from .errors import ConfigError, translate
 from .event import Event as _Event
 from .lock import Lock, _acall, _call
 from .maintenance import Maintenance
+from .stats import ServerStats
 from .settings import ClientSettings, validation_message
 
 
@@ -21,7 +22,7 @@ class DistLockClient:
 
         client = DistLockClient.from_url("distlock://billing:s3cret@10.0.0.5:7878/billing?pool_size=5&default_ttl=30")
 
-        async with client.mutex("nightly-report") as guard:
+        async with client.Mutex("nightly-report") as guard:
             if guard.status is ProcessingStatus.SUCCEEDED:
                 return                      # someone already did it
             ...
@@ -115,9 +116,22 @@ class DistLockClient:
     def ping_sync(self) -> float:
         return _call(self._native.ping_sync)
 
+    async def stats(self) -> ServerStats:
+        """The server's health figures: memory, CPU (system and process), open files, load,
+        connected clients, locks, and whether it is still in its startup grace period.
+
+        Takes about 200 ms, because CPU usage is measured over a short window. Connects if needed.
+        Any logged-in client may ask. Read-only.
+        """
+        return ServerStats._from_native(await _acall(self._native.stats))
+
+    def stats_sync(self) -> ServerStats:
+        """Blocking :meth:`stats`."""
+        return ServerStats._from_native(_call(self._native.stats_sync))
+
     # ------------------------------------------------------------------ making locks
 
-    def lock(
+    def Lock(
         self,
         name: str,
         ttl: Optional[float] = None,
@@ -140,28 +154,28 @@ class DistLockClient:
         mode = LockMode(mode)
         return Lock(self._native, name, kind=mode.value, ttl=ttl, namespace=namespace, wait=wait)
 
-    def rlock(
+    def RLock(
         self, name: str, ttl: Optional[float] = None, namespace: Optional[str] = None, *, wait: Optional[float] = None
     ) -> Lock:
         """The shared (reader) side of the read/write lock ``name``: many readers at once, but never
         alongside a writer."""
-        return self.lock(name, ttl, namespace, LockMode.READ, wait=wait)
+        return self.Lock(name, ttl, namespace, LockMode.READ, wait=wait)
 
-    def wlock(
+    def WLock(
         self, name: str, ttl: Optional[float] = None, namespace: Optional[str] = None, *, wait: Optional[float] = None
     ) -> Lock:
         """The exclusive (writer) side of the read/write lock ``name``: blocks, and is blocked by,
         every reader and every other writer of that name."""
-        return self.lock(name, ttl, namespace, LockMode.WRITE, wait=wait)
+        return self.Lock(name, ttl, namespace, LockMode.WRITE, wait=wait)
 
-    def mutex(
+    def Mutex(
         self, name: str, ttl: Optional[float] = None, namespace: Optional[str] = None, *, wait: Optional[float] = None
     ) -> Lock:
         """A plain exclusive lock. Mutexes are a separate space from read/write locks: a mutex and
-        an rlock/wlock with the same name do not conflict."""
-        return self.lock(name, ttl, namespace, LockMode.MUTEX, wait=wait)
+        an RLock/WLock with the same name do not conflict."""
+        return self.Lock(name, ttl, namespace, LockMode.MUTEX, wait=wait)
 
-    def semaphore(
+    def Semaphore(
         self,
         name: str,
         capacity: int,
@@ -194,7 +208,7 @@ class DistLockClient:
 
     # ------------------------------------------------------------------ lifecycle
 
-    def event(
+    def Event(
         self,
         name: str,
         *,
@@ -204,8 +218,8 @@ class DistLockClient:
     ) -> _Event:
         """A named broadcast, like :class:`asyncio.Event` with a limited memory::
 
-            val = await client.event("deploy-finished").wait()
-            woken = await client.event("deploy-finished").set("v1.2.3")
+            val = await client.Event("deploy-finished").wait()
+            woken = await client.Event("deploy-finished").set("v1.2.3")
 
         :param namespace: overrides the client's namespace; ``""`` means none.
         :param timeout: how long :meth:`Event.wait` waits by default: ``None`` as long as the server
@@ -218,8 +232,6 @@ class DistLockClient:
         """
         return _Event(self._native, name, namespace=namespace, timeout=timeout, publish_for=publish_for)
 
-    #: The same as :meth:`event`, for code that reads better with a capital letter.
-    Event = event
 
     async def connect(self) -> None:
         """Connect now instead of on first use (to fail fast on bad credentials)."""

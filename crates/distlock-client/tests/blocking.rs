@@ -71,3 +71,11 @@ fn dropping_a_blocking_lock_releases_it() {
     assert!(!got.is_lost());
     a.close().unwrap();
 }
+#[test]
+fn stats_work_without_async() {
+    let (_rt, addr) = start_in_background();
+    let a = client_for(addr, "billing").connect_blocking().unwrap();
+    let s = a.stats().unwrap();
+    assert_eq!(s.connected_clients, 1);
+    assert!(s.process.unwrap().memory_bytes.is_some_and(|m| m > 0));
+}

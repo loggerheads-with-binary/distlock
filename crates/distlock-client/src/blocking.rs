@@ -71,6 +71,10 @@ impl Client {
         self.rt.block_on(self.inner.set_event(s))
     }
 
+    /// The server's health figures; see [`crate::Client::stats`].
+    pub fn stats(&self) -> Result<crate::ServerStats> {
+        self.rt.block_on(self.inner.stats())
+    }
     /// Administrative commands, such as reloading the server's users file.
     pub fn maintenance(&self) -> Maintenance {
         Maintenance {

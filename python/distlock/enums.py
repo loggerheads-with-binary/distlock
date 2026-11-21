@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 
 class LockMode(str, enum.Enum):
-    """How a lock from :meth:`DistLockClient.lock` behaves.
+    """How a lock from :meth:`DistLockClient.Lock` behaves.
 
     ``READ`` and ``WRITE`` are the two sides of one read/write lock: any number of readers may hold
     it together, a writer holds it alone, and a waiting writer is not starved by later readers.

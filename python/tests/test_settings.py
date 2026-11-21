@@ -133,7 +133,7 @@ def test_from_env(monkeypatch):
 def test_creating_a_client_does_not_touch_the_network():
     # Port 1 is closed; nothing may be attempted until a lock is first used.
     client = DistLockClient.from_url("distlock://a:b@127.0.0.1:1")
-    lock = client.mutex("x")
+    lock = client.Mutex("x")
     assert client.session_id is None and lock.name == "x"
 
 
@@ -147,10 +147,10 @@ def test_locks_validate_their_arguments_when_created():
         dict(name="x", wait=-1),
     ):
         with pytest.raises(ValueError):
-            client.mutex(**bad)
+            client.Mutex(**bad)
     with pytest.raises(ValueError):
-        client.lock("x", mode="sideways")
+        client.Lock("x", mode="sideways")
     with pytest.raises(ConfigError):
-        client.semaphore("x", capacity=0)
+        client.Semaphore("x", capacity=0)
     with pytest.raises(ConfigError):
-        client.semaphore("x", capacity=2, permits=3)
+        client.Semaphore("x", capacity=2, permits=3)

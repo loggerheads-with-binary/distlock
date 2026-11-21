@@ -15,6 +15,7 @@ use tracing::{error, info, warn};
 use crate::actor::{Actor, Command};
 use crate::config::ServerConfig;
 use crate::conn::{self, Ctx};
+use crate::stats::Sampler;
 use crate::users::UserDb;
 
 /// Commands from all connections queue here; a full queue slows readers down (TCP backpressure).
@@ -50,6 +51,7 @@ impl Server {
             users,
             actor: tx,
             next_conn: AtomicU64::new(1),
+            sampler: tokio::sync::Mutex::new(Sampler::new()),
         });
         Ok(Self {
             listener,

@@ -12,6 +12,7 @@ mod config;
 mod conn;
 mod convert;
 mod server;
+mod stats;
 mod users;
 mod util;
 

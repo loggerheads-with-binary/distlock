@@ -14,7 +14,7 @@ background, so a crashed holder's lock frees itself.
 | Package | What it is | Install | Coverage |
 |---|---|---|---|
 | [`distlock-server`](crates/distlock-server) | the lock server (binary and library) | `cargo install distlock-server` | [![codecov](https://codecov.io/gh/loggerheads-with-binary/distlock/graph/badge.svg?component=distlock-server)](https://codecov.io/gh/loggerheads-with-binary/distlock) |
-| [`distlock-client`](crates/distlock-client) | async and blocking Rust client | `cargo add distlock-client` | [![codecov](https://codecov.io/gh/loggerheads-with-binary/distlock/graph/badge.svg?component=distlock-client)](https://codecov.io/gh/loggerheads-with-binary/distlock) |
+| [`distlock-client`](crates/distlock-client) | async and blocking Rust client | `cargo add distlock-client`, health check: `cargo install distlock-client --bin distlock-health` | [![codecov](https://codecov.io/gh/loggerheads-with-binary/distlock/graph/badge.svg?component=distlock-client)](https://codecov.io/gh/loggerheads-with-binary/distlock) |
 | [`distlock-core`](crates/distlock-core) | the pure lock-table state machine | `cargo add distlock-core` | [![codecov](https://codecov.io/gh/loggerheads-with-binary/distlock/graph/badge.svg?component=distlock-core)](https://codecov.io/gh/loggerheads-with-binary/distlock) |
 | [`distlock-proto`](crates/distlock-proto) | protobuf wire types | `cargo add distlock-proto` | [![codecov](https://codecov.io/gh/loggerheads-with-binary/distlock/graph/badge.svg?component=distlock-proto)](https://codecov.io/gh/loggerheads-with-binary/distlock) |
 | [`pydistlock`](python) | Python client (imports as `distlock`) | `pip install pydistlock` | [![codecov](https://codecov.io/gh/loggerheads-with-binary/distlock/graph/badge.svg?component=pydistlock)](https://codecov.io/gh/loggerheads-with-binary/distlock) |
@@ -40,7 +40,7 @@ from distlock import DistLockClient, ProcessingStatus
 
 client = DistLockClient.from_url("distlock://billing:s3cret@127.0.0.1:7878/billing")
 
-async with client.mutex("nightly-report") as guard:
+async with client.Mutex("nightly-report") as guard:
     if guard.status is ProcessingStatus.SUCCEEDED:
         return                                    # the previous holder already did the work
     ...                                           # the lease is renewed while this runs
@@ -64,6 +64,21 @@ let lock = client.acquire(Acquire::mutex("nightly-report")).await?;
 // ... work; `lock.is_lost()` tells you if the lease was lost ...
 lock.release_with(Some(State::Succeeded), None).await?;
 ```
+
+## Health check and monitoring
+`distlock-health` logs in and prints the server's memory, CPU, open files, load, connected clients, locks
+held and startup-grace state. It can run on a timer and POST the result to a webhook.
+```bash
+cargo install --path crates/distlock-client --bin distlock-health   # from a checkout; or cargo build --release -p distlock-client --bin distlock-health
+export DISTLOCK_URL='distlock://billing:s3cret@127.0.0.1:7878'
+distlock-health                                  # one check; exit 0 healthy, 1 failed, 3 in startup grace (--require-ready)
+distlock-health --interval 30 \
+  --ok-webhook https://hooks.example.com/up \
+  --error-webhook https://hooks.example.com/down  # or $DISTLOCK_OK_WEBHOOK / $DISTLOCK_ERROR_WEBHOOK
+```
+Every check logs in afresh and POSTs a JSON report to the OK or the error webhook. Full options, the
+JSON format and exit codes are in the [`distlock-client` README](crates/distlock-client/README.md#distlock-health).
+From Python, `await client.stats()` (or `client.stats_sync()`) returns the same figures.
 
 ## Things to know before you deploy
 

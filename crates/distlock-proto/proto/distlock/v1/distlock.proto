@@ -26,6 +26,7 @@ message ClientFrame {
     Maintenance maintenance = 18;
     EventWait event_wait = 19;
     EventSet event_set = 20;
+    GetStats get_stats = 21;
   }
 }
 
@@ -45,6 +46,7 @@ message ServerFrame {
     MaintenanceOk maintenance_ok = 19;
     EventWaitOk event_wait_ok = 20;
     EventSetOk event_set_ok = 21;
+    StatsOk stats_ok = 22;
 
     // Pushes. May be delivered on ANY connection attached to the session.
     Granted granted = 30;
@@ -324,6 +326,45 @@ message ResetUsersOk {
   bool invoker_dropped = 8;        // the sender itself was thrown out; its connection closes after this reply
 }
 
+// ---------------------------------------------------------------- stats
+//
+// A health check. Any authenticated client may ask. The reply takes about 200 ms, because CPU
+// usage is measured over a short window. Optional fields are absent when the server's
+// platform cannot report them.
+message GetStats {}
+message StatsOk {
+  string version = 1;
+  uint64 uptime_ms = 2;
+  uint32 connections = 3;          // open TCP connections that finished the handshake
+  uint32 sessions = 4;             // sessions that exist (a disconnected one lives until it idles out)
+  uint32 connected_clients = 5;    // sessions with at least one open connection
+  uint32 locks_held = 6;           // granted leases (a semaphore or read lock counts once per holder)
+  uint32 requests_queued = 7;      // acquires waiting for a lock
+  uint32 lock_names = 8;           // names in the table, including idle ones kept for their state tag
+  uint32 events = 9;               // event names with waiters or a live publication
+  bool in_startup_grace = 10;      // true: acquires are refused with UNAVAILABLE
+  uint32 startup_grace_remaining_ms = 11;
+  SystemStats system = 12;
+  ProcessStats process = 13;
+}
+message SystemStats {
+  uint64 total_memory_bytes = 1;
+  uint64 used_memory_bytes = 2;
+  uint32 cpu_count = 3;
+  double cpu_percent = 7;            // whole machine, 0..100, over a ~200 ms window ending at the snapshot
+  optional double load_avg_1m = 4;   // absent on Windows
+  optional double load_avg_5m = 5;
+  optional double load_avg_15m = 6;
+}
+message ProcessStats {
+  uint32 pid = 1;
+  double cpu_percent = 7;            // this process over the same window, averaged across all cores, 0..100
+  optional uint64 memory_bytes = 2;          // resident set
+  optional uint64 virtual_memory_bytes = 3;
+  optional uint64 cpu_time_ms = 4;           // user + system, since the process started
+  optional uint64 open_files = 5;            // file descriptors / handles, sockets included
+  optional uint64 open_files_limit = 6;
+}
 // ---------------------------------------------------------------- errors and pushes
 
 message Error {
