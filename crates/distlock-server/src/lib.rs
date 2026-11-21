@@ -13,6 +13,7 @@ mod conn;
 mod convert;
 mod server;
 mod stats;
+mod tls;
 mod users;
 mod util;
 

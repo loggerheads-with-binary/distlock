@@ -18,6 +18,7 @@ from distlock import (
     AuthenticationError,
     ClientClosed,
     ConfigError,
+    TlsError,
     ConnectionFailed,
     DistLockClient,
     InvalidArgument,
@@ -175,7 +176,7 @@ def test_the_pool_reconnects_by_itself_after_a_server_restart(make_server, name)
     "kind, expected",
     [
         ("config", ConfigError),
-        ("tls_unsupported", ConfigError),
+        ("tls", TlsError),
         ("invalid_argument", InvalidArgument),
         ("auth", AuthenticationError),
         ("connect", ConnectionFailed),

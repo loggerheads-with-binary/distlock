@@ -32,15 +32,16 @@ async fn main() -> ExitCode {
     info!(file = %cfg.users_file.display(), users = users.user_count(), "users loaded");
 
     let bind_addr = cfg.bind_addr;
+    let tls = cfg.tls_cert_file.is_some();
     let server = match Server::bind(cfg, users).await {
         Ok(server) => server,
         Err(e) => {
-            error!("cannot listen on {bind_addr}: {e}");
+            error!("cannot start the listener on {bind_addr}: {e}");
             return ExitCode::FAILURE;
         }
     };
     match server.local_addr() {
-        Ok(addr) => info!(%addr, "distlock-server listening"),
+        Ok(addr) => info!(%addr, tls, "distlock-server listening"),
         Err(e) => warn!("listening, but cannot read the local address: {e}"),
     }
 

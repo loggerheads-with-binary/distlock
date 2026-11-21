@@ -277,7 +277,7 @@ struct NativeClient {
 #[pymethods]
 impl NativeClient {
     #[new]
-    #[pyo3(signature = (client_id, password, host, port, namespace, pool_size, tls, default_ttl))]
+    #[pyo3(signature = (client_id, password, host, port, namespace, pool_size, tls, tls_verify_ca, tls_verify_host, ca_file_path, ca_file_content, default_ttl))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         client_id: String,
@@ -287,6 +287,10 @@ impl NativeClient {
         namespace: Option<String>,
         pool_size: usize,
         tls: bool,
+        tls_verify_ca: bool,
+        tls_verify_host: bool,
+        ca_file_path: Option<String>,
+        ca_file_content: Option<String>,
         default_ttl: f64,
     ) -> PyResult<Self> {
         let config = DistLockClient {
@@ -297,6 +301,10 @@ impl NativeClient {
             namespace,
             pool_size,
             tls,
+            tls_verify_ca,
+            tls_verify_host,
+            ca_file_path: ca_file_path.map(Into::into),
+            ca_file_content,
             default_ttl: secs("default_ttl", default_ttl)?,
         };
         Ok(Self {

@@ -62,7 +62,34 @@ client = DistLockClient(client_id="billing", password="s3cret", host="10.0.0.5",
 | `/namespace` | prefix for every lock name (`namespace:...`), to keep applications apart | none |
 | `pool_size` | TCP connections (1–256); they all share one session | `4` |
 | `default_ttl` | lease length in seconds for locks that do not set `ttl` | `30` |
-| `tls` | not supported by the server yet; `true` raises `ConfigError` | `false` |
+| `tls` | connect over TLS (the server needs a certificate; see the server README) | `false` |
+| `tls_verify_ca` | require the certificate to chain to a trusted CA | `true` |
+| `tls_verify_host` | require the certificate to name `host` (DNS name or IP) | `true` |
+| `ca_file_path` | PEM file of CA certificates to trust instead of the built-in public roots | none |
+| `ca_file_content` | the same CA certificates as PEM *text* (for a CA held in a secret or an environment variable); set this or `ca_file_path`, not both | none |
+
+The two `tls_verify_*` flags give four modes:
+
+| `tls_verify_ca` | `tls_verify_host` | Mode | Use it when |
+|---|---|---|---|
+| `true` | `true` | full verification | normal production use |
+| `true` | `false` | CA only | the certificate is from your CA but does not name the address you connect to |
+| `false` | `true` | name only | self-signed certificate that names the host; any issuer is accepted, so it does not stop an attacker who presents their own certificate for that name |
+| `false` | `false` | none | encrypts, but does not authenticate the server: protects against passive eavesdropping only |
+
+A rejected certificate raises `TlsError` (a `ConnectionFailed`). All of these are also `DistLockClient(...)`
+keyword arguments (`tls=True, tls_verify_host=False, ca_file_path=...`). To trust your own CA:
+
+```python
+DistLockClient.from_url("distlock://billing:s3cret@10.0.0.5:7878?tls=true&ca_file_path=/etc/distlock/ca.crt")
+DistLockClient(client_id="billing", password="s3cret", host="10.0.0.5", tls=True,
+               ca_file_content=os.environ["DISTLOCK_CA_PEM"])    # no file needed
+```
+
+In a URL, percent-encode a `ca_file_content` value (`urllib.parse.quote(pem)`). The host in the URL must
+be in the server certificate's `subjectAltName`. Making the CA and the server certificate is covered in
+the [server README](https://github.com/loggerheads-with-binary/distlock/blob/main/crates/distlock-server/README.md#tls),
+with a table of error messages.
 
 URLs are parsed with `urllib` and validated with pydantic ([`ClientSettings`](https://github.com/loggerheads-with-binary/distlock/blob/main/python/distlock/settings.py));
 mistakes raise `ConfigError` with a message that never contains the password.

@@ -51,6 +51,56 @@ The server is [`distlock-server`](https://crates.io/crates/distlock-server). Pyt
 
 Licensed under the [MIT license](https://github.com/loggerheads-with-binary/distlock/blob/main/LICENSE).
 
+## TLS
+
+Set `tls: true` (or `?tls=true` in a URL) to connect over TLS to a server that has a certificate.
+Two independent flags choose what is checked on the server's certificate:
+
+| `tls_verify_ca` | `tls_verify_host` | Mode | What it protects against |
+|---|---|---|---|
+| `true` (default) | `true` (default) | full verification | eavesdropping and impersonation |
+| `true` | `false` | CA only | the certificate must chain to a trusted CA; its name is ignored |
+| `false` | `true` | name only | the certificate must name `host` (DNS name or IP); any issuer, so self-signed passes. An attacker with their own certificate for that name is not stopped |
+| `false` | `false` | none | eavesdropping only: the server is not authenticated |
+
+The handshake signature is verified in every mode. A rejected certificate fails `connect` with
+`Error::Tls`, whose message says why (`UnknownIssuer`, `NotValidForName`, `Expired`, ...).
+
+### Trusting your own CA
+
+By default the client trusts the public CAs built into it (Mozilla's list). A server certificate from
+a private CA, or a self-signed one, is rejected until you hand the client the CA certificate, as a file
+or as PEM text. Set one of the two, not both (`Error::Config` otherwise). It replaces the public roots
+and may contain several certificates.
+
+| Field | URL parameter | |
+|---|---|---|
+| `ca_file_path: Option<PathBuf>` | `ca_file_path=/etc/distlock/ca.crt` | PEM file of CA certificates |
+| `ca_file_content: Option<String>` | `ca_file_content=-----BEGIN...` (percent-encoded) | the same, as text: for a CA kept in a secret or an environment variable |
+
+```rust
+let client = DistLockClient {
+    tls: true,
+    ca_file_path: Some("/etc/distlock/ca.crt".into()),
+    ..DistLockClient::from_url("distlock://billing:s3cret@10.0.0.5:7878")?
+}
+.connect()
+.await?;
+
+// CA from an environment variable instead of a file:
+let ca = std::env::var("DISTLOCK_CA_PEM")?;
+let client = DistLockClient { tls: true, ca_file_content: Some(ca), ..base };
+```
+
+The host in the URL must be a name or IP address in the server certificate's `subjectAltName`.
+`tls_verify_host: false` skips that check, `tls_verify_ca: false` skips the chain check (and with it
+the need for a CA file). To create the CA and the server certificate, see
+[TLS in the server README](https://github.com/loggerheads-with-binary/distlock/blob/main/crates/distlock-server/README.md#tls),
+including the table of error messages.
+
+URL form: `distlock://user:pass@host:7878?tls=true&tls_verify_ca=true&tls_verify_host=false&ca_file_path=%2Fetc%2Fca.crt`.
+`distlock-health` takes `--tls`, `--ca-file PEM`, `--no-verify-ca` and `--no-verify-host`.
+
 ## `distlock-health`
 
 A command-line health check. It logs in to a server and prints memory, CPU (whole machine and the
@@ -92,6 +142,7 @@ echo "$URL" | distlock-health         # URL from stdin
 |---|---|
 | `--url URL` or `--url -` | the server (see above) |
 | `--require-ready` | treat the startup grace period as unhealthy (exit 3, error webhook) |
+| `--tls`, `--ca-file PEM`, `--no-verify-ca`, `--no-verify-host` | TLS and what to check (see [TLS](#tls)); the flags only add TLS or relax a check |
 | `--timeout SECS` | give up on one check after this long (default 15) |
 | `--interval SECS` | keep checking, waiting this long after each check finishes |
 | `--ok-webhook URL` | POST here when a check is healthy (also `$DISTLOCK_OK_WEBHOOK`) |

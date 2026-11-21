@@ -56,6 +56,9 @@ class LockLost(DistLockError):
     """
 
 
+class TlsError(ConnectionFailed):
+    """TLS could not be set up (an unreadable CA file, an invalid host name), or the server's
+    certificate was rejected under the verification settings in use."""
 class ClientClosed(DistLockError):
     """The client has been closed."""
 
@@ -71,7 +74,7 @@ class ServerError(DistLockError):
 
 _BY_KIND: Dict[str, Type[DistLockError]] = {
     "config": ConfigError,
-    "tls_unsupported": ConfigError,
+    "tls": TlsError,
     "invalid_argument": InvalidArgument,
     "auth": AuthenticationError,
     "connect": ConnectionFailed,

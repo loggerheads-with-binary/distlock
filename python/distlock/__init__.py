@@ -27,6 +27,7 @@ from .errors import (
     MaintenanceError,
     ServerError,
     SessionLost,
+    TlsError,
 )
 from .event import Event
 from .lock import Lock, LockGuard
@@ -55,6 +56,7 @@ __all__ = [
     "ConfigError",
     "AuthenticationError",
     "ConnectionFailed",
+    "TlsError",
     "SessionLost",
     "LockTimeout",
     "LockBusy",

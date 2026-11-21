@@ -38,6 +38,7 @@ mod error;
 pub mod event;
 mod lock;
 mod maintenance;
+mod tls;
 mod url;
 
 pub use client::{Client, DistLockClient};
