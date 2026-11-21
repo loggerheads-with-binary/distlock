@@ -44,8 +44,8 @@ aarch64), macOS (Intel and Apple silicon) and Windows (x64), plus a `SHA256SUMS`
 `distlock-health`; the Linux and macOS ones also hold `distlock-server` (the Windows archive has the health
 check only).
 ```bash
-curl -LO https://github.com/loggerheads-with-binary/distlock/releases/download/v0.2.0/distlock-0.2.0-x86_64-unknown-linux-musl.tar.gz
-tar -xzf distlock-0.2.0-x86_64-unknown-linux-musl.tar.gz && install -m 755 distlock-0.2.0-*/distlock-* /opt/distlock/bin/
+curl -LO https://github.com/loggerheads-with-binary/distlock/releases/download/v0.3.0/distlock-0.3.0-x86_64-unknown-linux-musl.tar.gz
+tar -xzf distlock-0.3.0-x86_64-unknown-linux-musl.tar.gz && install -m 755 distlock-0.3.0-*/distlock-* /opt/distlock/bin/
 ```
 **OR D. Build it yourself** and copy the binaries wherever you like.
 ```bash

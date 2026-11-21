@@ -2,7 +2,7 @@ name: Release
 # Publishes when a version tag (v1.2.3) is pushed: crates.io, PyPI, and a GitHub Release (the page
 # under "Releases" on the repository) with the binaries for every OS.
 #
-#   git tag v0.2.0 && git push origin v0.2.0      (after bumping every version; see BUILD.md)
+#   git tag v0.3.0 && git push origin v0.3.0      (after bumping every version; see BUILD.md)
 #
 # This workflow builds nothing itself. ci.yml does all the building and testing (it is called below
 # with build-artifacts: true) and uploads the binaries, wheels and sdist as artifacts. The jobs here
