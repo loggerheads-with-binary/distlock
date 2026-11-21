@@ -243,6 +243,20 @@ impl Client {
         }
     }
 
+    /// The server's health figures: process and host resources, connected clients, locks, and
+    /// whether it is still in its startup grace period. Read-only.
+    pub async fn stats(&self) -> Result<pb::StatsOk> {
+        let conn = self.inner.pick_conn().await?;
+        match conn
+            .call(cf::Body::GetStats(pb::GetStats {}), REQUEST_TIMEOUT)
+            .await?
+        {
+            sf::Body::StatsOk(ok) => Ok(ok),
+            sf::Body::Error(e) => Err(Error::from_server(e)),
+            _ => Err(protocol("GetStats")),
+        }
+    }
+
     /// How many of the pool's connections are up right now (at most `pool_size`).
     pub fn connections(&self) -> usize {
         (0..self.inner.slots.len())

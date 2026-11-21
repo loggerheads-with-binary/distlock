@@ -45,11 +45,11 @@ async def _acall(fn: Callable[..., Awaitable[T]], *args: Any) -> T:
 
 
 class Lock:
-    """A reusable lock. Create one with :meth:`DistLockClient.lock` and friends.
+    """A reusable lock. Create one with :meth:`DistLockClient.Lock` and friends.
 
     Use it as a context manager (``async with`` or plain ``with``), or acquire explicitly::
 
-        async with client.mutex("nightly-report") as guard:
+        async with client.Mutex("nightly-report") as guard:
             ...
 
         guard = await lock.acquire(wait=5)     # raises LockTimeout after 5 s

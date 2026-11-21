@@ -38,8 +38,11 @@ mod error;
 pub mod event;
 mod lock;
 mod maintenance;
+mod url;
 
 pub use client::{Client, DistLockClient};
+/// What [`Client::stats`] returns.
+pub use distlock_proto::v1::StatsOk as ServerStats;
 pub use error::{Error, Result};
 pub use event::{EventSet, EventWait, Published, SetResult};
 pub use lock::{Acquire, Kind, Lock, Lost, Previous, State};

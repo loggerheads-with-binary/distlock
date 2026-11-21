@@ -25,6 +25,7 @@ use tracing::{debug, error, warn};
 use crate::actor::{Command, ConnHandle, ConnId, Outbound};
 use crate::config::ServerConfig;
 use crate::convert::{error_body, frame};
+use crate::stats::Sampler;
 use crate::users::UserDb;
 
 const PROTOCOL_VERSION: u32 = 1;
@@ -41,6 +42,8 @@ pub(crate) struct Ctx {
     pub users: Arc<UserDb>,
     pub actor: mpsc::Sender<Command>,
     pub next_conn: AtomicU64,
+    /// One at a time: concurrent health checks would measure each other.
+    pub sampler: tokio::sync::Mutex<Sampler>,
 }
 
 type Reader = FramedRead<OwnedReadHalf, LengthDelimitedCodec>;
@@ -335,6 +338,18 @@ async fn steady(reader: &mut Reader, conn: &ConnHandle, ctx: &Ctx) -> End {
             }
             None => {
                 return refuse(conn, seq, pb::ErrorCode::InvalidArgument, "empty message").await;
+            }
+            Some(client_frame::Body::GetStats(_)) => {
+                let (system, process) = ctx.sampler.lock().await.sample().await;
+                let cmd = Command::Stats {
+                    conn: conn.id,
+                    seq,
+                    system: Box::new(system),
+                    process: Box::new(process),
+                };
+                if ctx.actor.send(cmd).await.is_err() {
+                    return End::Dropped;
+                }
             }
             Some(client_frame::Body::Maintenance(command)) => {
                 if let Some(end) = maintenance(conn, seq, command, ctx).await {

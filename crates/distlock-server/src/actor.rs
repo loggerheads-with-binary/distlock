@@ -77,6 +77,14 @@ pub(crate) enum Command {
         seq: u64,
         reload: Reload,
     },
+    /// `GetStats` from `conn`. The connection task already sampled the host and process (that takes
+    /// ~200 ms and must not stall the engine); the engine adds what only it knows.
+    Stats {
+        conn: ConnId,
+        seq: u64,
+        system: Box<pb::SystemStats>,
+        process: Box<pb::ProcessStats>,
+    },
     ConnClosed {
         conn: ConnId,
     },
@@ -196,6 +204,12 @@ impl Actor {
             } => self.attach(conn, seq, session_id, &token),
             Command::Request { conn, seq, body } => self.request(conn, seq, body),
             Command::UsersReset { conn, seq, reload } => self.users_reset(conn, seq, reload),
+            Command::Stats {
+                conn,
+                seq,
+                system,
+                process,
+            } => self.stats(conn, seq, system, process),
             Command::ConnClosed { conn } => self.remove_conn(conn),
             Command::Shutdown { .. } => {} // handled in `run`
         }
@@ -434,6 +448,7 @@ impl Actor {
             client_frame::Body::Hello(_)
             | client_frame::Body::Attach(_)
             | client_frame::Body::Ping(_)
+            | client_frame::Body::GetStats(_)
             | client_frame::Body::Maintenance(_) => {
                 self.reply(
                     conn,
@@ -442,6 +457,41 @@ impl Actor {
                 );
             }
         }
+    }
+
+    fn stats(
+        &mut self,
+        conn: ConnId,
+        seq: u64,
+        system: Box<pb::SystemStats>,
+        process: Box<pb::ProcessStats>,
+    ) {
+        let now = self.now();
+        let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+        let table = self.table.stats();
+        let (held, queued) = self.table.lock_counts();
+        let grace = self.table.config().startup_grace.saturating_sub(now);
+        let ok = pb::StatsOk {
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            uptime_ms: u64::try_from(now.as_millis()).unwrap_or(u64::MAX),
+            connections: count(self.conns.len()),
+            sessions: count(self.sessions.len()),
+            connected_clients: count(
+                self.sessions
+                    .values()
+                    .filter(|s| !s.conns.is_empty())
+                    .count(),
+            ),
+            locks_held: count(held),
+            requests_queued: count(queued),
+            lock_names: count(table.entries),
+            events: count(table.events),
+            in_startup_grace: !grace.is_zero(),
+            startup_grace_remaining_ms: ms(grace),
+            system: Some(system),
+            process: Some(process),
+        };
+        self.reply(conn, seq, server_frame::Body::StatsOk(ok));
     }
 
     fn acquire(&mut self, conn: ConnId, seq: u64, sid: SessionId, now: Duration, a: pb::Acquire) {

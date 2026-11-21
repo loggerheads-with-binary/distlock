@@ -50,3 +50,86 @@ The server is [`distlock-server`](https://crates.io/crates/distlock-server). Pyt
 [`pydistlock`](https://pypi.org/project/pydistlock/), which wraps this crate.
 
 Licensed under the [MIT license](https://github.com/loggerheads-with-binary/distlock/blob/main/LICENSE).
+
+## `distlock-health`
+
+A command-line health check. It logs in to a server and prints memory, CPU (whole machine and the
+server process, each 0–100 averaged over all cores), open files, load, connected clients, locks held,
+queued requests and whether the server is still in its startup grace period. It can also run forever
+and report to webhooks.
+
+### Install or build
+
+```sh
+# from crates.io (needs a release of distlock-client that includes the tool)
+cargo install distlock-client --bin distlock-health
+
+# from a checkout of this repository
+cargo install --path crates/distlock-client --bin distlock-health   # installs to ~/.cargo/bin
+
+# or just build it, without installing
+cargo build --release -p distlock-client --bin distlock-health      # target/release/distlock-health
+```
+
+The tool is behind the `cli` feature, which is on by default. A library user who does not want its
+dependencies (`ureq` for webhooks, `serde_json`) writes
+`distlock-client = { version = "0.2", default-features = false }`.
+
+### Run it
+
+The server is a URL, `distlock://CLIENT_ID:PASSWORD@HOST[:PORT]`. User and password may be
+percent-encoded. It is read from `--url URL`, `--url -` (one line on stdin), `$DISTLOCK_URL`, or
+stdin when piped. Prefer the last three: a password in argv shows up in `ps`.
+
+```sh
+export DISTLOCK_URL='distlock://billing:s3cret@127.0.0.1:7878'
+distlock-health                       # one check, prints key: value lines
+distlock-health --require-ready       # exit 3 while the server is in its startup grace period
+echo "$URL" | distlock-health         # URL from stdin
+```
+
+| Flag | Meaning |
+|---|---|
+| `--url URL` or `--url -` | the server (see above) |
+| `--require-ready` | treat the startup grace period as unhealthy (exit 3, error webhook) |
+| `--timeout SECS` | give up on one check after this long (default 15) |
+| `--interval SECS` | keep checking, waiting this long after each check finishes |
+| `--ok-webhook URL` | POST here when a check is healthy (also `$DISTLOCK_OK_WEBHOOK`) |
+| `--error-webhook URL` | POST here when a check fails (also `$DISTLOCK_ERROR_WEBHOOK`) |
+
+One-shot exit codes: `0` healthy, `1` could not connect, log in or get stats, `2` bad usage, `3` in
+startup grace with `--require-ready`.
+
+### Continuous monitoring and webhooks
+
+With `--interval`, the tool checks forever. Every check logs in afresh, so a check also proves that
+logging in still works. A failed check never stops the loop. Webhooks also work without `--interval`,
+for a cron job.
+
+```sh
+distlock-health --interval 30 --require-ready \
+  --ok-webhook    https://hooks.example.com/distlock/up \
+  --error-webhook https://hooks.example.com/distlock/down
+```
+
+Each check POSTs one JSON document (`Content-Type: application/json`) to the matching webhook, if one
+is set. Both are optional, and every check reports, so a healthy server posts to the OK webhook every
+interval. A check is an error if it cannot connect or log in, times out, or finds the server in its
+grace period with `--require-ready`.
+
+```json
+{
+  "status": "ok",
+  "text": "distlock 10.0.0.5:7878: healthy",
+  "server": "10.0.0.5:7878",
+  "checked_at_unix": 1795287325,
+  "error": null,
+  "stats": { "ready": true, "connected_clients": 3, "locks_held": 2, "process_cpu_percent": 0.4, "...": "..." }
+}
+```
+
+On `"status": "error"`, `error` says why, and `stats` is `null` unless the server answered. `text`
+is a single line for chat tools that show one string. Webhook URLs are `http://` or `https://`. They
+often hold a secret, so the tool never prints them. A webhook that is down or answers an error code
+is reported on stderr and does not change the exit code or stop the loop. The login password is never
+sent.

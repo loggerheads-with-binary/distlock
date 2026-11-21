@@ -21,7 +21,7 @@ client = DistLockClient.from_url(
     "distlock://billing:s3cret@10.0.0.5:7878/billing?pool_size=5&default_ttl=30"
 )
 
-async with client.mutex("nightly-report") as guard:
+async with client.Mutex("nightly-report") as guard:
     if guard.status is ProcessingStatus.SUCCEEDED:
         return                                   # the previous holder already did the work
     ...                                          # the lease is renewed for you while this runs
@@ -51,6 +51,7 @@ pytest
 ```python
 client = DistLockClient.from_url("distlock://client_id:password@host:port/namespace?pool_size=5&tls=false&default_ttl=30")
 client = DistLockClient.from_env()                       # reads $DISTLOCK_URL
+stats = await client.stats()                              # health: CPU %, memory, open files, clients, locks (or stats_sync())
 client = DistLockClient(client_id="billing", password="s3cret", host="10.0.0.5", namespace="billing")
 ```
 
@@ -75,12 +76,12 @@ re-joined without losing locks.
 ## Locks
 
 ```python
-lock = client.lock("name", ttl=None, namespace=None, mode=LockMode.WRITE, wait=None)
+lock = client.Lock("name", ttl=None, namespace=None, mode=LockMode.WRITE, wait=None)
 
-client.rlock("name")      # shared: many readers at once, never alongside a writer
-client.wlock("name")      # exclusive: blocks and is blocked by every reader and writer of that name
-client.mutex("name")      # exclusive, in its own space: a mutex "x" and an rlock/wlock "x" do not conflict
-client.semaphore("name", capacity=5, permits=1)
+client.RLock("name")      # shared: many readers at once, never alongside a writer
+client.WLock("name")      # exclusive: blocks and is blocked by every reader and writer of that name
+client.Mutex("name")      # exclusive, in its own space: a mutex "x" and an RLock/WLock "x" do not conflict
+client.Semaphore("name", capacity=5, permits=1)
 ```
 
 * `ttl` is the lease length in seconds (default: the client's `default_ttl`). It is **renewed in the
@@ -107,10 +108,10 @@ the request from the server, so it can never be granted to nobody; Ctrl-C interr
 A named broadcast, like `asyncio.Event` with a limited memory: many clients wait, one sets, and the set says how many it woke.
 
 ```python
-event = client.event("deploy-finished")           # also spelled client.Event(...)
+event = client.Event("deploy-finished")
 value = await event.wait(timeout=60)               # the setter's value, or None; LockTimeout after 60 s
 
-woken = await client.event("deploy-finished").set("v1.2.3")
+woken = await client.Event("deploy-finished").set("v1.2.3")
 assert woken == number_of_clients_waiting_right_now
 ```
 
@@ -124,7 +125,7 @@ assert woken == number_of_clients_waiting_right_now
   does not spin while a publication is still inside its window:
 
 ```python
-event = client.event("tick")
+event = client.Event("tick")
 while True:
     value = await event.wait()          # never the same publication twice
 ```

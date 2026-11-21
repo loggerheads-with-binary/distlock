@@ -23,11 +23,11 @@ def test_resetting_with_nothing_changed_is_a_no_op_and_nobody_is_disturbed(make_
 
     async def main():
         a, b = srv.client("billing"), srv.client("reports")
-        async with a.mutex(name) as guard:
+        async with a.Mutex(name) as guard:
             report = await b.maintenance.reset_users()
             assert isinstance(report, ResetUsersReport) and report.unchanged, report
             assert not guard.lost
-            assert await b.mutex(name).try_acquire() is None
+            assert await b.Mutex(name).try_acquire() is None
 
     asyncio.run(main())
 
@@ -36,13 +36,13 @@ def test_added_users_can_log_in_afterwards(make_server, name):
     srv = make_server(users=BOTH)
     reports = srv.client("reports")
     with pytest.raises(AuthenticationError):
-        srv.client("newcomer").mutex(name).acquire_sync()
+        srv.client("newcomer").Mutex(name).acquire_sync()
 
     srv.write_users({**BOTH, "newcomer": True})
     report = reports.maintenance.reset_users_sync()
     assert (report.added, report.removed, report.sessions_closed) == (1, 0, 0)
     assert not report.unchanged
-    with srv.client("newcomer").mutex(name) as guard:
+    with srv.client("newcomer").Mutex(name) as guard:
         assert not guard.lost
 
 
@@ -51,9 +51,9 @@ def test_a_removed_user_is_dropped_everywhere_and_its_locks_are_freed(make_serve
 
     async def main():
         victim, admin = srv.client("billing", pool_size=2), srv.client("reports")
-        guard = await victim.mutex(name).acquire()
+        guard = await victim.Mutex(name).acquire()
         await admin.connect()
-        assert await admin.mutex(name).try_acquire() is None
+        assert await admin.Mutex(name).try_acquire() is None
 
         srv.write_users({"reports": True})  # billing is gone
         report = await admin.maintenance.reset_users()
@@ -61,7 +61,7 @@ def test_a_removed_user_is_dropped_everywhere_and_its_locks_are_freed(make_serve
         assert report.connections_closed == 2, "both pool connections were closed by the server"
 
         # The server released its lock at once; the victim finds out quickly and is not welcome back.
-        freed = await admin.mutex(name).try_acquire()
+        freed = await admin.Mutex(name).try_acquire()
         assert freed is not None
         await asyncio.wait_for(guard.wait_lost(), 5)
         assert guard.lost and victim.connections == 0
@@ -73,13 +73,13 @@ def test_a_removed_user_is_dropped_everywhere_and_its_locks_are_freed(make_serve
 def test_the_next_holder_sees_abandoned_and_the_removed_client_cannot_log_in(make_server, name):
     srv = make_server(users=BOTH)
     victim, admin = srv.client("billing"), srv.client("reports")
-    held = victim.mutex(name).acquire_sync()
+    held = victim.Mutex(name).acquire_sync()
     srv.write_users({"reports": True})
     admin.maintenance.reset_users_sync()
-    with admin.mutex(name, wait=5) as guard:
+    with admin.Mutex(name, wait=5) as guard:
         assert guard.status is ProcessingStatus.ABANDONED
     with pytest.raises(AuthenticationError):
-        victim.mutex(name + "-x").acquire_sync()  # waits for a connection that cannot come back
+        victim.Mutex(name + "-x").acquire_sync()  # waits for a connection that cannot come back
     assert held.lost
 
 
@@ -88,13 +88,13 @@ def test_a_client_can_remove_itself_and_still_gets_its_report(make_server, name)
 
     async def main():
         me = srv.client("billing", pool_size=3)
-        guard = await me.mutex(name).acquire()
+        guard = await me.Mutex(name).acquire()
         srv.write_users({"reports": True})
         report = await me.maintenance.reset_users()  # the reply arrives before the connection is dropped
         assert (report.removed, report.sessions_closed, report.invoker_dropped) == (1, 1, True), report
         await asyncio.wait_for(guard.wait_lost(), 5)
         with pytest.raises(AuthenticationError):
-            await me.mutex(name + "-x").acquire()
+            await me.Mutex(name + "-x").acquire()
 
     asyncio.run(main())
 
@@ -113,7 +113,7 @@ def test_a_user_that_is_added_back_recovers_without_the_application_doing_anythi
         srv.write_users(BOTH)
         assert (await admin.maintenance.reset_users()).added == 1
         # `a` has been retrying in the background (backoff up to 5 s); it logs in again by itself.
-        guard = await asyncio.wait_for(a.mutex(name).acquire(), 30)
+        guard = await asyncio.wait_for(a.Mutex(name).acquire(), 30)
         assert not guard.lost
         await guard.release()
 
@@ -125,13 +125,13 @@ def test_an_unloadable_file_raises_a_maintenance_error_and_changes_nothing(make_
 
     async def main():
         a, b = srv.client("billing"), srv.client("reports")
-        async with a.mutex(name) as guard:
+        async with a.Mutex(name) as guard:
             srv.write_raw("{ definitely not json")
             with pytest.raises(MaintenanceError) as info:
                 await b.maintenance.reset_users()
             assert "billing" not in str(info.value), "the reply must not leak names"
             assert not guard.lost
-            assert await b.mutex(name).try_acquire() is None
+            assert await b.Mutex(name).try_acquire() is None
         srv.write_users(BOTH)
         assert (await b.maintenance.reset_users()).password_changed == 0
 
@@ -141,7 +141,7 @@ def test_an_unloadable_file_raises_a_maintenance_error_and_changes_nothing(make_
 def test_a_changed_password_only_affects_new_logins(make_server, name):
     srv = make_server(users=BOTH)
     live = srv.client("billing")
-    guard = live.mutex(name).acquire_sync()
+    guard = live.Mutex(name).acquire_sync()
 
     # Same user, different password hash: the live session carries on, new logins need the new one.
     import json

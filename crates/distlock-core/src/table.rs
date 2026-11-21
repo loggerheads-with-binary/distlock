@@ -269,6 +269,12 @@ impl LockTable {
         }
     }
 
+    /// `(granted leases, queued acquires)`. Walks every entry, so call it for diagnostics only.
+    pub fn lock_counts(&self) -> (usize, usize) {
+        self.entries
+            .values()
+            .fold((0, 0), |(h, q), e| (h + e.holders.len(), q + e.queue.len()))
+    }
     /// Whether `session` has any pending or held request. A session with none (and no connections)
     /// can be forgotten by the layer above without telling the table.
     pub fn session_has_requests(&self, session: SessionId) -> bool {

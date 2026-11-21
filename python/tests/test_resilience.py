@@ -36,7 +36,7 @@ class Rival(threading.Thread):
     """Keeps trying to take a lock from a *different* client, from its own thread, and records
     whether it ever succeeded. If a lease ever lapsed, this thread would get the lock."""
 
-    def __init__(self, client: DistLockClient, name: str, every: float = 0.1, kind: str = "mutex") -> None:
+    def __init__(self, client: DistLockClient, name: str, every: float = 0.1, kind: str = "Mutex") -> None:
         super().__init__(daemon=True)
         self._lock = getattr(client, kind)(name)  # must be the same kind of lock as the holder's
         self._every = every
@@ -76,7 +76,7 @@ def test_the_lease_is_renewed_while_the_event_loop_is_blocked(server, name):
     async def main():
         holder, rival_client = server.client("billing"), server.client("reports")
         rival = Rival(rival_client, name)
-        async with holder.mutex(name, ttl=0.5) as guard:
+        async with holder.Mutex(name, ttl=0.5) as guard:
             rival.start()
             wait_for("the rival to be running", lambda: rival.attempts >= 2)
             time.sleep(2.5)  # blocks the event loop AND this thread: five lease lengths
@@ -92,7 +92,7 @@ def test_the_lease_is_renewed_while_the_event_loop_is_blocked(server, name):
 def test_the_lease_is_renewed_while_python_holds_the_gil_computing(server, name):
     holder, rival_client = server.client("billing"), server.client("reports")
     rival = Rival(rival_client, name)
-    with holder.mutex(name, ttl=0.5) as guard:
+    with holder.Mutex(name, ttl=0.5) as guard:
         rival.start()
         wait_for("the rival to be running", lambda: rival.attempts >= 2)
         deadline = time.monotonic() + 2.5
@@ -108,7 +108,7 @@ def test_the_lease_is_renewed_while_python_holds_the_gil_computing(server, name)
 
 def test_a_lock_is_still_renewed_after_the_client_object_goes_out_of_scope(server, name):
     def acquire_and_forget_the_client():
-        return server.client("billing").mutex(name, ttl=0.4).acquire_sync()
+        return server.client("billing").Mutex(name, ttl=0.4).acquire_sync()
 
     guard = acquire_and_forget_the_client()  # the DistLockClient itself is unreachable from here on
     gc.collect()
@@ -123,8 +123,8 @@ def test_a_lock_is_still_renewed_after_the_client_object_goes_out_of_scope(serve
 
 def test_a_long_hold_across_many_leases_never_loses_the_lock(server, name):
     holder, rival_client = server.client("billing"), server.client("reports")
-    rival = Rival(rival_client, name, every=0.05, kind="wlock")
-    with holder.wlock(name, ttl=0.6) as guard:
+    rival = Rival(rival_client, name, every=0.05, kind="WLock")
+    with holder.WLock(name, ttl=0.6) as guard:
         rival.start()
         for _ in range(8):
             time.sleep(0.5)  # four seconds, nearly seven lease lengths, in small steps
@@ -164,7 +164,7 @@ def test_the_pool_reconnects_by_itself_after_a_server_restart(make_server, name)
 
     wait_for("every connection to be re-established", lambda: client.reconnects >= 3 and client.connections == 3, 30)
     assert client.session_id != old_session, "the client should have logged in again"
-    with client.mutex(name) as guard:
+    with client.Mutex(name) as guard:
         assert not guard.lost
 
 

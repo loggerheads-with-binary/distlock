@@ -4,11 +4,11 @@ Any number of clients wait on a name; one client sets it, which wakes everyone w
 moment and says how many there were::
 
     # in many processes
-    event = client.event("deploy-finished")
+    event = client.Event("deploy-finished")
     version = await event.wait(timeout=60)        # the value the setter sent, or None
 
     # in one of them
-    woken = await client.event("deploy-finished").set("v1.2.3")
+    woken = await client.Event("deploy-finished").set("v1.2.3")
     assert woken == number_of_clients_waiting_right_now
 
 For ``publish_for`` seconds after a set, the event also counts as *published*: a wait that starts
@@ -26,7 +26,7 @@ from .lock import _UNSET, _acall, _call
 
 
 class Event:
-    """A reusable handle on one event name. Create it with :meth:`DistLockClient.event`.
+    """A reusable handle on one event name. Create it with :meth:`DistLockClient.Event`.
 
     ``wait`` and ``set`` exist in awaitable and blocking (``_sync``) forms, and one ``Event`` can be
     used from many tasks or threads at once.
@@ -34,7 +34,7 @@ class Event:
     **Looping on one event.** An ``Event`` remembers the last publication that its ``wait`` returned
     and only returns newer ones, so::
 
-        event = client.event("tick")
+        event = client.Event("tick")
         while True:
             value = await event.wait()      # never the same publication twice
 

@@ -4,7 +4,7 @@
 
     client = DistLockClient.from_url("distlock://billing:s3cret@10.0.0.5:7878/billing?pool_size=5&default_ttl=30")
 
-    async with client.mutex("nightly-report") as guard:
+    async with client.Mutex("nightly-report") as guard:
         if guard.status is ProcessingStatus.SUCCEEDED:
             return
         ...
@@ -32,6 +32,7 @@ from .event import Event
 from .lock import Lock, LockGuard
 from .maintenance import Maintenance, ResetUsersReport
 from .settings import ClientSettings
+from .stats import ProcessStats, ServerStats, SystemStats
 
 __all__ = [
     "__version__",
@@ -45,6 +46,9 @@ __all__ = [
     "PreviousStatus",
     "Maintenance",
     "ResetUsersReport",
+    "ServerStats",
+    "SystemStats",
+    "ProcessStats",
     # errors
     "DistLockError",
     "InvalidArgument",
