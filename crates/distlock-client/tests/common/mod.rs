@@ -393,6 +393,7 @@ impl Pki {
 pub async fn tls_server(pem: &Pem) -> TestServer {
     let (cert, key) = (pem.cert.clone(), pem.key.clone());
     TestServer::start_with("127.0.0.1:0".parse().unwrap(), move |c| {
+        c.tls_enabled = true;
         c.tls_cert_file = Some(cert);
         c.tls_key_file = Some(key);
     })

@@ -76,15 +76,42 @@ class ClientSettings(BaseModel):
         return value
 
     @classmethod
-    def from_url(cls, url: str) -> "ClientSettings":
+    def from_url(
+        cls,
+        url: str,
+        *,
+        tls: Optional[bool] = None,
+        tls_verify_ca: Optional[bool] = None,
+        tls_verify_host: Optional[bool] = None,
+        ca_file_path: Optional[str] = None,
+        ca_file_content: Optional[str] = None,
+    ) -> "ClientSettings":
         """Parse ``distlock://client_id:password@host[:port][/namespace][?pool_size=&tls=&tls_verify_ca=&tls_verify_host=&ca_file_path=&ca_file_content=&default_ttl=]``.
 
         User and password may be percent-encoded. The path, if any, is the namespace (one segment).
         ``default_ttl`` is in seconds. Unknown query parameters are an error, not ignored.
 
+        The keyword arguments are the TLS settings. One that is given (not ``None``) **overrides** the
+        same setting in the URL; one left out leaves the URL's value. Giving ``ca_file_path`` replaces a
+        ``ca_file_content`` from the URL, and the other way round. Giving both is an error.
+
         Raises :class:`~distlock.errors.ConfigError` if the URL is malformed or a value is invalid.
         """
         fields = _parse_url(url)
+        explicit = {
+            "tls": tls,
+            "tls_verify_ca": tls_verify_ca,
+            "tls_verify_host": tls_verify_host,
+            "ca_file_path": ca_file_path,
+            "ca_file_content": ca_file_content,
+        }
+        if ca_file_path is not None and ca_file_content is not None:
+            raise ConfigError("set only one of ca_file_path and ca_file_content")
+        if ca_file_path is not None:
+            fields.pop("ca_file_content", None)
+        if ca_file_content is not None:
+            fields.pop("ca_file_path", None)
+        fields.update({k: v for k, v in explicit.items() if v is not None})
         try:
             return cls.model_validate(fields)
         except ValidationError as e:

@@ -3,7 +3,7 @@
 mod common;
 use common::*;
 use distlock_client::{Acquire, DistLockClient, Error};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 fn client(srv: &TestServer, ca: &Path, verify_ca: bool, verify_host: bool) -> DistLockClient {
     DistLockClient {
         tls: true,
@@ -122,4 +122,51 @@ async fn the_ca_can_be_given_as_text_and_only_one_source_is_allowed() {
         ..client(&srv, &pki.ca_file(), true, true)
     };
     assert!(matches!(both.connect().await, Err(Error::Config(_))));
+}
+
+#[tokio::test]
+async fn the_server_refuses_to_start_when_tls_is_enabled_without_a_usable_certificate() {
+    let pki = Pki::new();
+    let good = pki.issued("good", names("localhost"));
+    let other = pki.issued("other", names("localhost"));
+    let bind = |tls_enabled, cert: Option<PathBuf>, key: Option<PathBuf>| {
+        let cfg = distlock_server::ServerConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            tls_enabled,
+            tls_cert_file: cert,
+            tls_key_file: key,
+            ..Default::default()
+        };
+        async move {
+            distlock_server::Server::bind(cfg, distlock_server::UserDb::for_tests(&[]))
+                .await
+                .map(|_| ())
+        }
+    };
+    let missing = pki.dir.path().join("missing.pem");
+    assert!(bind(true, None, None).await.is_err(), "no files");
+    assert!(
+        bind(true, Some(missing.clone()), Some(good.key.clone()))
+            .await
+            .is_err(),
+        "missing certificate"
+    );
+    assert!(
+        bind(true, Some(good.cert.clone()), Some(missing))
+            .await
+            .is_err(),
+        "missing key"
+    );
+    assert!(
+        bind(true, Some(good.cert.clone()), Some(other.key))
+            .await
+            .is_err(),
+        "key of another certificate"
+    );
+    assert!(
+        bind(true, Some(good.cert.clone()), Some(good.key.clone()))
+            .await
+            .is_ok()
+    );
+    assert!(bind(false, None, None).await.is_ok());
 }

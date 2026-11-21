@@ -19,15 +19,43 @@ background, so a crashed holder's lock frees itself.
 | [`distlock-proto`](crates/distlock-proto) | protobuf wire types | `cargo add distlock-proto` | [![codecov](https://codecov.io/gh/loggerheads-with-binary/distlock/graph/badge.svg?component=distlock-proto)](https://codecov.io/gh/loggerheads-with-binary/distlock) |
 | [`pydistlock`](python) | Python client (imports as `distlock`) | `pip install pydistlock` | [![codecov](https://codecov.io/gh/loggerheads-with-binary/distlock/graph/badge.svg?component=pydistlock)](https://codecov.io/gh/loggerheads-with-binary/distlock) |
 
+## Install
+Two programs: `distlock-server` and the health check `distlock-health` (in the `distlock-client`
+package). Pick **one** of the three ways. All of them put the binaries in `~/.cargo/bin` unless you say
+otherwise, so make sure that folder is on your `PATH`.
+
+**A. From crates.io**, with no checkout. `cargo install` takes the *package* name; no repository name
+or URL is needed (`--bin` picks the program inside the `distlock-client` package). It works once a
+release containing the program is published.
+```bash
+cargo install --locked distlock-server
+cargo install --locked distlock-client --bin distlock-health
+```
+**OR B. From a checkout** of this repository (a local path; `git clone https://github.com/loggerheads-with-binary/distlock`
+first). To skip the clone, `cargo install --git https://github.com/loggerheads-with-binary/distlock distlock-server`
+does the same; that is the one form that needs the repository URL.
+```bash
+cargo install --locked --path crates/distlock-server
+cargo install --locked --path crates/distlock-client --bin distlock-health
+```
+**OR C. Build it yourself** and copy the binaries wherever you like.
+```bash
+cargo build --release -p distlock-server -p distlock-client --bin distlock-server --bin distlock-health
+install -m 755 target/release/distlock-server target/release/distlock-health /opt/distlock/bin/
+```
+**Installing at a given location.** With A or B add `--root DIR`: the programs land in `DIR/bin`, for
+example `cargo install --locked distlock-server --root /opt/distlock` gives
+`/opt/distlock/bin/distlock-server`. (`CARGO_INSTALL_ROOT=/opt/distlock` does the same.) With C, copy from
+`target/release/` to any folder. To remove an A/B install, `cargo uninstall distlock-server --root DIR`.
+
 ## Quick start
 
-**1. Run the server.** It reads its settings from environment variables (see
+**1. Run the server** (installed as described above). It reads its settings from environment variables (see
 [`.env.example`](.env.example)) and its users from a JSON file of bcrypt hashes
 ([`config/users.example.json`](config/users.example.json), hashes made with
 [`scripts/hash-password.sh`](scripts/hash-password.sh)).
 
 ```bash
-cargo install distlock-server
 cp .env.example .env                  # defaults listen on 127.0.0.1:7878
 cp config/users.example.json config/users.json   # then replace every hash
 distlock-server
@@ -69,7 +97,7 @@ lock.release_with(Some(State::Succeeded), None).await?;
 `distlock-health` logs in and prints the server's memory, CPU, open files, load, connected clients, locks
 held and startup-grace state. It can run on a timer and POST the result to a webhook.
 ```bash
-cargo install --path crates/distlock-client --bin distlock-health   # from a checkout; or cargo build --release -p distlock-client --bin distlock-health
+# install it as described in Install above
 export DISTLOCK_URL='distlock://billing:s3cret@127.0.0.1:7878'
 distlock-health                                  # one check; exit 0 healthy, 1 failed, 3 in startup grace (--require-ready)
 distlock-health --interval 30 \
@@ -81,32 +109,31 @@ JSON format and exit codes are in the [`distlock-client` README](crates/distlock
 From Python, `await client.stats()` (or `client.stats_sync()`) returns the same figures.
 
 ## TLS with your own certificate and CA
-Pass the server a certificate and key, and tell clients which CA to trust. For an internal service the
-simplest setup is your own CA:
+TLS is off until you set `DISTLOCK_TLS_ENABLED=true`. The server then needs a certificate and key and
+refuses to start without a valid pair. The scripts in [`scripts/tls/`](scripts/tls) make them (they need only `openssl`):
 ```bash
-KEY="-newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -pkeyopt ec_param_enc:named_curve -nodes"
-openssl req -x509 $KEY -days 3650 -keyout ca.key -out ca.crt -subj "/CN=distlock CA" \
-  -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign"
-openssl req -new $KEY -keyout server.key -out server.csr -subj "/CN=distlock-server"
-printf 'subjectAltName=DNS:locks.internal.example,IP:10.0.0.5\nbasicConstraints=CA:FALSE\nkeyUsage=digitalSignature\nextendedKeyUsage=serverAuth\n' > server.ext
-openssl x509 -req -sha256 -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 365 -extfile server.ext -out server.crt
-DISTLOCK_TLS_CERT_FILE=server.crt DISTLOCK_TLS_KEY_FILE=server.key distlock-server   # keep ca.key offline
+scripts/tls/new-ca.sh                      # a private CA: config/tls/ca.crt (for clients) + ca.key (keep secret)
+#   OR use a CA you have:  scripts/tls/use-ca.sh --cert /pki/ca.crt --key /pki/ca.key
+scripts/tls/server-cert.sh --name locks.internal.example --ip 10.0.0.5     # server.crt + server.key
+#   several: --name a.example,b.example --name '*.svc.example' --ip 10.0.0.5,10.0.0.6   (wildcards ok; no CIDR ranges)
+#   already have a key?  add --key /old/server.key
+DISTLOCK_TLS_ENABLED=true DISTLOCK_TLS_CERT_FILE=config/tls/server.crt DISTLOCK_TLS_KEY_FILE=config/tls/server.key distlock-server
 ```
-Give `ca.crt` to the clients, as a file or as text. Either field works; set one:
+Give `ca.crt` to the clients, as a file or as text (set one):
 ```python
 DistLockClient.from_url("distlock://billing:s3cret@10.0.0.5:7878?tls=true&ca_file_path=/etc/distlock/ca.crt")
-DistLockClient(client_id="billing", password="s3cret", host="10.0.0.5", tls=True, ca_file_content=ca_pem_text)
+DistLockClient.from_url(url, tls=True, ca_file_content=ca_pem_text)      # arguments beat the URL
 ```
 Clients check the certificate in two independent ways, both on by default: `tls_verify_ca` (chains to a
-trusted CA) and `tls_verify_host` (names the host or IP in the URL, via `subjectAltName`). Turning off
-one gives "CA only" or "name only"; both off encrypts without authenticating the server. With a public
-CA's certificate clients need no CA file. The full guide, with renewal, intermediate CAs and a table of
-error messages, is in the [server README](crates/distlock-server/README.md#tls); the client side is in the
-[Rust](crates/distlock-client/README.md#tls) and [Python](python/README.md) READMEs.
+trusted CA) and `tls_verify_host` (names the host or IP in the URL). Turning off one gives "CA only" or
+"name only"; both off encrypts without authenticating the server. With a public CA's certificate clients need
+no CA file. The private key is always required, but never a passphrase: the server cannot ask for one.
+Renewal, an external CA, and a table of error messages are in the [server README](crates/distlock-server/README.md#tls);
+the client side is in the [Rust](crates/distlock-client/README.md#tls) and [Python](python/README.md) READMEs.
 
 ## Things to know before you deploy
 
-* **TLS is optional and off by default.** Without `DISTLOCK_TLS_CERT_FILE` and `DISTLOCK_TLS_KEY_FILE` the
+* **TLS is optional and off by default.** Without `DISTLOCK_TLS_ENABLED=true` the
   server speaks plaintext: bind it to a private interface and never expose it on an untrusted network.
   Clients choose how strictly to verify the certificate with two flags (`tls_verify_ca`, `tls_verify_host`);
   see the [server](crates/distlock-server/README.md#tls) and [Python](python/README.md) READMEs.

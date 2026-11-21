@@ -96,7 +96,7 @@ The host in the URL must be a name or IP address in the server certificate's `su
 `tls_verify_host: false` skips that check, `tls_verify_ca: false` skips the chain check (and with it
 the need for a CA file). To create the CA and the server certificate, see
 [TLS in the server README](https://github.com/loggerheads-with-binary/distlock/blob/main/crates/distlock-server/README.md#tls),
-including the table of error messages.
+including renewal, an external CA and the table of error messages.
 
 URL form: `distlock://user:pass@host:7878?tls=true&tls_verify_ca=true&tls_verify_host=false&ca_file_path=%2Fetc%2Fca.crt`.
 `distlock-health` takes `--tls`, `--ca-file PEM`, `--no-verify-ca` and `--no-verify-host`.
@@ -110,15 +110,25 @@ and report to webhooks.
 
 ### Install or build
 
+Pick **one**. `cargo install` puts the program in `~/.cargo/bin` (keep it on your `PATH`) unless you
+add `--root DIR`, which puts it in `DIR/bin`.
+
+**A. From crates.io.** `cargo install` takes the *package* name, `distlock-client`; no repository is
+needed. `--bin` selects the program inside it. Works once a release containing the tool is published.
 ```sh
-# from crates.io (needs a release of distlock-client that includes the tool)
-cargo install distlock-client --bin distlock-health
-
-# from a checkout of this repository
-cargo install --path crates/distlock-client --bin distlock-health   # installs to ~/.cargo/bin
-
-# or just build it, without installing
-cargo build --release -p distlock-client --bin distlock-health      # target/release/distlock-health
+cargo install --locked distlock-client --bin distlock-health
+cargo install --locked distlock-client --bin distlock-health --root /opt/distlock   # /opt/distlock/bin/
+```
+**OR B. From a checkout** (`git clone https://github.com/loggerheads-with-binary/distlock`, then from its
+root). `cargo install --git https://github.com/loggerheads-with-binary/distlock distlock-client --bin distlock-health`
+skips the clone.
+```sh
+cargo install --locked --path crates/distlock-client --bin distlock-health [--root /opt/distlock]
+```
+**OR C. Build it** and copy the binary anywhere.
+```sh
+cargo build --release -p distlock-client --bin distlock-health   # target/release/distlock-health
+install -m 755 target/release/distlock-health /opt/distlock/bin/
 ```
 
 The tool is behind the `cli` feature, which is on by default. A library user who does not want its

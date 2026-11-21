@@ -86,8 +86,17 @@ DistLockClient(client_id="billing", password="s3cret", host="10.0.0.5", tls=True
                ca_file_content=os.environ["DISTLOCK_CA_PEM"])    # no file needed
 ```
 
+`from_url` (and `from_env`) also take `tls`, `tls_verify_ca`, `tls_verify_host`, `ca_file_path` and
+`ca_file_content` as keyword arguments. **A given argument beats the same setting in the URL**, and giving
+`ca_file_path` drops a `ca_file_content` in the URL (and the other way round), so the URL can live in
+configuration and the CA in a secret:
+
+```python
+DistLockClient.from_url(os.environ["DISTLOCK_URL"], tls=True, ca_file_content=os.environ["DISTLOCK_CA_PEM"])
+```
+
 In a URL, percent-encode a `ca_file_content` value (`urllib.parse.quote(pem)`). The host in the URL must
-be in the server certificate's `subjectAltName`. Making the CA and the server certificate is covered in
+be in the server certificate's `subjectAltName`. Making the CA and the server certificate (`scripts/tls/*.sh`) is covered in
 the [server README](https://github.com/loggerheads-with-binary/distlock/blob/main/crates/distlock-server/README.md#tls),
 with a table of error messages.
 

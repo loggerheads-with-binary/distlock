@@ -18,6 +18,7 @@ uv.lock
 .venv
 
 /config/users.json
+/config/tls/
 # Coverage output
 lcov.info
 coverage.xml

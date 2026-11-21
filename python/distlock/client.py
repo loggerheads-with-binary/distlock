@@ -66,20 +66,44 @@ class DistLockClient:
     # ------------------------------------------------------------------ construction
 
     @classmethod
-    def from_url(cls, url: str) -> "DistLockClient":
+    def from_url(
+        cls,
+        url: str,
+        *,
+        tls: Optional[bool] = None,
+        tls_verify_ca: Optional[bool] = None,
+        tls_verify_host: Optional[bool] = None,
+        ca_file_path: Optional[str] = None,
+        ca_file_content: Optional[str] = None,
+    ) -> "DistLockClient":
         """``distlock://client_id:password@host[:port][/namespace][?pool_size=&tls=&tls_verify_ca=&tls_verify_host=&ca_file_path=&ca_file_content=&default_ttl=]``
+
+        The TLS keyword arguments take priority over the same settings in the URL. Handy for keeping
+        the URL in configuration and the CA in a secret::
+
+            DistLockClient.from_url(os.environ["DISTLOCK_URL"], tls=True, ca_file_content=ca_pem)
 
         See :meth:`ClientSettings.from_url` for the details.
         """
-        return cls(ClientSettings.from_url(url))
+        return cls(
+            ClientSettings.from_url(
+                url,
+                tls=tls,
+                tls_verify_ca=tls_verify_ca,
+                tls_verify_host=tls_verify_host,
+                ca_file_path=ca_file_path,
+                ca_file_content=ca_file_content,
+            )
+        )
 
     @classmethod
-    def from_env(cls, variable: str = "DISTLOCK_URL") -> "DistLockClient":
-        """Like :meth:`from_url`, reading the URL from an environment variable."""
+    def from_env(cls, variable: str = "DISTLOCK_URL", **tls_overrides: Any) -> "DistLockClient":
+        """Like :meth:`from_url`, reading the URL from an environment variable. The keyword arguments
+        are the same TLS overrides."""
         url = os.environ.get(variable)
         if not url:
             raise ConfigError(f"environment variable {variable} is not set")
-        return cls.from_url(url)
+        return cls.from_url(url, **tls_overrides)
 
     # ------------------------------------------------------------------ introspection
 
