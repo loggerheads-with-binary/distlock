@@ -1,25 +1,28 @@
 name: Release
-
-# Publishes to crates.io and PyPI when a version tag (v1.2.3) is pushed.
+# Publishes when a version tag (v1.2.3) is pushed: crates.io, PyPI, and a GitHub Release (the page
+# under "Releases" on the repository) with the binaries for every OS.
 #
 #   git tag v0.2.0 && git push origin v0.2.0      (after bumping every version; see BUILD.md)
+#
+# This workflow builds nothing itself. ci.yml does all the building and testing (it is called below
+# with build-artifacts: true) and uploads the binaries, wheels and sdist as artifacts. The jobs here
+# only download those and publish them, so what is released is exactly what was tested.
 #
 # One-time setup:
 #   * repository secret CARGO_REGISTRY_TOKEN (a crates.io API token that may publish these crates)
 #   * PyPI "trusted publisher" for this repo: workflow release.yml, environment "pypi"
 #     (https://docs.pypi.org/trusted-publishers/); no PyPI token is stored anywhere.
-#   * GitHub environments "crates-io" and "pypi" (add required reviewers there if you want a manual
-#     approval before anything is published).
+#   * GitHub environments "crates-io", "pypi" and "github-release" (add required reviewers there if
+#     you want a manual approval before anything is published).
+#   * Settings > Actions > General > Workflow permissions: the GitHub Release is made with the
+#     built-in GITHUB_TOKEN, which this workflow gives `contents: write` for that one job.
 on:
   push:
     tags: ["v[0-9]*"]
-
 permissions:
   contents: read
-
 env:
   CARGO_TERM_COLOR: always
-
 jobs:
   verify:
     name: tag is on main and versions match
@@ -37,60 +40,17 @@ jobs:
           fi
       - name: Every version in the repo must equal the tag
         run: scripts/check-version.sh "$GITHUB_REF_NAME"
-
-  test:
-    name: tests
+  # Tests, and the build of every artifact. Nothing below runs unless all of it succeeded, so a
+  # broken wheel cannot leave crates.io published and PyPI not.
+  ci:
+    name: build and test
     needs: verify
     uses: ./.github/workflows/ci.yml
-
-  build-sdist:
-    name: build sdist
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: PyO3/maturin-action@v1
-        with:
-          command: sdist
-          args: --out dist
-          working-directory: python
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dist-sdist
-          path: python/dist
-
-  build-wheels:
-    name: wheel (${{ matrix.target }})
-    needs: test
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - { os: ubuntu-latest, target: x86_64, manylinux: auto }
-          - { os: ubuntu-latest, target: aarch64, manylinux: auto }
-          - { os: macos-latest, target: x86_64-apple-darwin }
-          - { os: macos-latest, target: aarch64-apple-darwin }
-          - { os: windows-latest, target: x64 }
-    steps:
-      - uses: actions/checkout@v4
-      - uses: PyO3/maturin-action@v1
-        with:
-          command: build
-          target: ${{ matrix.target }}
-          manylinux: ${{ matrix.manylinux || 'off' }}
-          args: --release --locked --out dist
-          working-directory: python
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dist-wheel-${{ matrix.os }}-${{ matrix.target }}
-          path: python/dist
-
-  # Everything above must succeed before anything is published, so a broken wheel cannot leave
-  # crates.io published and PyPI not.
+    with:
+      build-artifacts: true
   publish-crates:
     name: publish to crates.io
-    needs: [build-sdist, build-wheels]
+    needs: ci
     runs-on: ubuntu-latest
     environment: crates-io
     steps:
@@ -112,10 +72,9 @@ jobs:
             # so the next crate (which depends on it) can be published straight away.
             cargo publish -p "$crate" --locked
           done
-
   publish-pypi:
     name: publish to PyPI
-    needs: [build-sdist, build-wheels]
+    needs: ci
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -131,3 +90,43 @@ jobs:
         with:
           packages-dir: dist
           skip-existing: true
+  # Last, so a release page never appears for a version that failed to publish. Safe to re-run:
+  # an existing release is updated and its files replaced.
+  github-release:
+    name: GitHub Release
+    needs: [publish-crates, publish-pypi]
+    runs-on: ubuntu-latest
+    environment: github-release
+    permissions:
+      contents: write # create the release and upload its files
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bin-*
+          merge-multiple: true
+          path: files
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: files
+      - name: One checksum file for everything
+        working-directory: files
+        run: |
+          rm -f ./*.sha256   # the per-archive ones; SHA256SUMS replaces them
+          shasum -a 256 -- * > ../SHA256SUMS
+          mv ../SHA256SUMS .
+          ls -l
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          flags=""
+          case "$tag" in *-*) flags="--prerelease" ;; esac   # v1.0.0-rc1 and the like
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" files/* --clobber
+          else
+            gh release create "$tag" files/* --verify-tag --title "$tag" --generate-notes $flags
+          fi

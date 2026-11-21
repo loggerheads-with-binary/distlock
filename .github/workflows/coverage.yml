@@ -1,7 +1,8 @@
 name: Coverage
-# Kept out of ci.yml because the release workflow reuses ci.yml, and a coverage upload problem
-# must never block a release. One-time setup: add the repo to codecov.io and store its upload
-# token as the repository secret CODECOV_TOKEN.
+# Rust coverage only. Python coverage is measured inside the ci.yml python job (ubuntu, 3.13), so
+# that tests are not built and run twice. This one stays separate: an instrumented build cannot reuse
+# the plain test build, and a coverage problem must never block a release (which reuses ci.yml).
+# One-time setup: add the repo to codecov.io and store its upload token as the secret CODECOV_TOKEN.
 on:
   pull_request:
     branches: [main]
@@ -34,38 +35,5 @@ jobs:
         with:
           files: lcov.info
           flags: rust
-          token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: false
-  python:
-    name: python coverage
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            .
-            python
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-      - name: Install htpasswd
-        run: sudo apt-get update && sudo apt-get install -y apache2-utils
-      - name: Build the server the tests start
-        run: cargo build -p distlock-server --locked
-      - name: Build, install and test with coverage
-        working-directory: python
-        run: |
-          python -m venv .venv
-          . .venv/bin/activate
-          pip install maturin pytest pytest-cov "pydantic>=2.5"
-          maturin develop
-          pytest --cov=distlock --cov-report=xml --cov-report=term-missing
-          coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
-      - uses: codecov/codecov-action@v5
-        with:
-          files: python/coverage.xml
-          flags: python
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false

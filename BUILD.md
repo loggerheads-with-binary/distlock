@@ -45,24 +45,36 @@ directory; builds there can fail with spurious errors.
 ## GitHub Actions
 
 * `.github/workflows/ci.yml` runs on every pull request into `main` (and in the merge queue, and on
-  pushes to `main`): `lint` (fmt, clippy, docs with warnings denied), `rust` (tests on Linux and macOS)
-  and `python` (3.11 and 3.13, Linux and macOS). To make it gate merging, turn on branch protection
-  for `main` (Settings > Branches) and require the status checks `lint`, `rust (...)` and `python (...)`.
+  pushes to `main`): `lint` (fmt, clippy, docs with warnings denied), `rust` (tests on Linux and macOS),
+  `windows` (the health tool still compiles there) and `python` (3.11 and 3.13, Linux and macOS; the
+  Linux/3.13 leg also measures coverage). To make it gate merging, turn on branch protection
+  for `main` (Settings > Branches) and require the status checks `lint`, `rust (...)`, `windows` and `python (...)`.
   A workflow cannot block a merge by itself; the protection rule is what does.
+* `.github/workflows/coverage.yml` measures Rust coverage (Python coverage is part of the `python` job above,
+  so nothing is built and run twice). It is a separate workflow because an instrumented build cannot reuse the
+  plain test build, and a coverage upload problem must never block a release.
+* **CI builds, release publishes.** `ci.yml` can also be called with `build-artifacts: true`. It then builds, next
+  to the checks, everything that is released and uploads it as workflow artifacts: the `distlock-health` and
+  `distlock-server` binaries (`bin-<target>`; Linux musl x86_64/aarch64, macOS x86_64/arm64, and Windows x64 for
+  `distlock-health` only), the Python wheels (Linux x86_64/aarch64, macOS x86_64/arm64, Windows x64) and the sdist.
+  Pull requests do not pay for this.
 * `.github/workflows/release.yml` runs when a tag `v*` is pushed. It checks that the tagged commit is
-  on `main` and that every version in the repo equals the tag (`scripts/check-version.sh`), reruns the
-  tests, builds the sdist and wheels (Linux x86_64/aarch64, macOS x86_64/arm64, Windows x64), and only
-  if all of that succeeds publishes to crates.io and then PyPI. Re-running it after a partial failure is
-  safe: versions already published are skipped.
-
+  on `main` and that every version in the repo equals the tag (`scripts/check-version.sh`), then calls `ci.yml`
+  with `build-artifacts: true`. It builds nothing itself: once everything is green it publishes the artifacts
+  that CI made, to crates.io (from source, as cargo requires) and PyPI, and finally creates the **GitHub Release**
+  (the "Releases" page of the repository) with the binary archives
+  `distlock-<version>-<target>.tar.gz` / `.zip`, the wheels, the sdist, and a `SHA256SUMS` file, with generated
+  release notes. A tag with a `-` in it (`v1.0.0-rc1`) is marked as a pre-release. Re-running after a partial
+  failure is safe: versions already on crates.io and PyPI are skipped, and an existing release is updated.
   One-time setup: a repository secret `CARGO_REGISTRY_TOKEN`; a PyPI
   [trusted publisher](https://docs.pypi.org/trusted-publishers/) for this repo (workflow `release.yml`,
-  environment `pypi`); and GitHub environments `crates-io` and `pypi` (add required reviewers there
-  for a manual approval step before publishing).
-
+  environment `pypi`); and GitHub environments `crates-io`, `pypi` and `github-release` (add required reviewers
+  there for a manual approval step before publishing). The release uses the built-in `GITHUB_TOKEN`; the
+  repository setting Settings > Actions > General > "Workflow permissions" must not forbid the job's `contents: write`
+  (for an organisation it can be locked to read-only; then allow write there). The Linux aarch64 binary builds on
+  GitHub's `ubuntu-24.04-arm` runner, which is free for public repositories.
   To release: bump the versions (step 0 below), merge to `main`, then
   `git tag v0.2.0 && git push origin v0.2.0`.
-
 The manual steps below are the same thing done by hand, and the fallback if the workflow is unavailable.
 
 ## Releasing

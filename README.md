@@ -21,7 +21,7 @@ background, so a crashed holder's lock frees itself.
 
 ## Install
 Two programs: `distlock-server` and the health check `distlock-health` (in the `distlock-client`
-package). Pick **one** of the three ways. All of them put the binaries in `~/.cargo/bin` unless you say
+package). Pick **one** of these ways. All of them put the binaries in `~/.cargo/bin` unless you say
 otherwise, so make sure that folder is on your `PATH`.
 
 **A. From crates.io**, with no checkout. `cargo install` takes the *package* name; no repository name
@@ -38,15 +38,24 @@ does the same; that is the one form that needs the repository URL.
 cargo install --locked --path crates/distlock-server
 cargo install --locked --path crates/distlock-client --bin distlock-health
 ```
-**OR C. Build it yourself** and copy the binaries wherever you like.
+**OR C. Download a prebuilt binary** from the [Releases page](https://github.com/loggerheads-with-binary/distlock/releases).
+Each version has `distlock-<version>-<target>.tar.gz` (`.zip` on Windows) for Linux (static, x86_64 and
+aarch64), macOS (Intel and Apple silicon) and Windows (x64), plus a `SHA256SUMS` file. Every archive holds
+`distlock-health`; the Linux and macOS ones also hold `distlock-server` (the Windows archive has the health
+check only).
+```bash
+curl -LO https://github.com/loggerheads-with-binary/distlock/releases/download/v0.2.0/distlock-0.2.0-x86_64-unknown-linux-musl.tar.gz
+tar -xzf distlock-0.2.0-x86_64-unknown-linux-musl.tar.gz && install -m 755 distlock-0.2.0-*/distlock-* /opt/distlock/bin/
+```
+**OR D. Build it yourself** and copy the binaries wherever you like.
 ```bash
 cargo build --release -p distlock-server -p distlock-client --bin distlock-server --bin distlock-health
 install -m 755 target/release/distlock-server target/release/distlock-health /opt/distlock/bin/
 ```
 **Installing at a given location.** With A or B add `--root DIR`: the programs land in `DIR/bin`, for
 example `cargo install --locked distlock-server --root /opt/distlock` gives
-`/opt/distlock/bin/distlock-server`. (`CARGO_INSTALL_ROOT=/opt/distlock` does the same.) With C, copy from
-`target/release/` to any folder. To remove an A/B install, `cargo uninstall distlock-server --root DIR`.
+`/opt/distlock/bin/distlock-server`. (`CARGO_INSTALL_ROOT=/opt/distlock` does the same.) With C or D, copy the binaries (from the archive, or from
+`target/release/`) to any folder. To remove an A/B install, `cargo uninstall distlock-server --root DIR`.
 
 ## Quick start
 
@@ -144,7 +153,7 @@ the client side is in the [Rust](crates/distlock-client/README.md#tls) and [Pyth
 
 ## Building and releasing
 
-See [`BUILD.md`](BUILD.md). Releases publish the four crates to crates.io and `pydistlock` to PyPI
+See [`BUILD.md`](BUILD.md). Releases publish the four crates to crates.io, `pydistlock` to PyPI, and the binaries and wheels to GitHub Releases
 when a `vX.Y.Z` tag is pushed. Pre-commit hooks are in `.pre-commit-config.yaml`.
 
 ## License
