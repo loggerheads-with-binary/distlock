@@ -15,8 +15,8 @@ use distlock_proto::v1 as pb;
 use distlock_proto::v1::{client_frame, server_frame};
 use futures_util::{SinkExt, StreamExt};
 use prost::Message;
+use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{OwnedSemaphorePermit, mpsc};
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 use tokio_util::sync::CancellationToken;
@@ -44,10 +44,14 @@ pub(crate) struct Ctx {
     pub next_conn: AtomicU64,
     /// One at a time: concurrent health checks would measure each other.
     pub sampler: tokio::sync::Mutex<Sampler>,
+    pub tls: Option<tokio_rustls::TlsAcceptor>,
 }
 
-type Reader = FramedRead<OwnedReadHalf, LengthDelimitedCodec>;
-type Writer = FramedWrite<OwnedWriteHalf, LengthDelimitedCodec>;
+/// A plain or TLS stream, so everything below the handshake is the same code for both.
+trait Io: AsyncRead + AsyncWrite + Send + Unpin {}
+impl<T: AsyncRead + AsyncWrite + Send + Unpin> Io for T {}
+type Reader = FramedRead<ReadHalf<Box<dyn Io>>, LengthDelimitedCodec>;
+type Writer = FramedWrite<WriteHalf<Box<dyn Io>>, LengthDelimitedCodec>;
 
 #[derive(Debug)]
 enum End {
@@ -102,7 +106,24 @@ pub(crate) async fn serve(
         .length_field_length(4)
         .max_frame_length(ctx.cfg.max_frame_bytes)
         .new_codec();
-    let (read_half, write_half) = stream.into_split();
+    let stream: Box<dyn Io> = match &ctx.tls {
+        None => Box::new(stream),
+        Some(acceptor) => {
+            // A client that never finishes the TLS handshake must not hold a connection slot.
+            match tokio::time::timeout(ctx.cfg.handshake_timeout, acceptor.accept(stream)).await {
+                Ok(Ok(tls)) => Box::new(tls),
+                Ok(Err(e)) => {
+                    debug!(%peer, error = %e, "TLS handshake failed");
+                    return;
+                }
+                Err(_) => {
+                    debug!(%peer, "TLS handshake timed out");
+                    return;
+                }
+            }
+        }
+    };
+    let (read_half, write_half) = tokio::io::split(stream);
     let mut reader: Reader = FramedRead::new(read_half, codec.clone());
     let sink: Writer = FramedWrite::new(write_half, codec);
 

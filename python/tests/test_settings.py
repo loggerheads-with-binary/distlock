@@ -115,9 +115,19 @@ def test_the_client_can_be_built_from_keywords_and_validates_them():
         DistLockClient(ClientSettings.from_url(FULL), client_id="a")
 
 
-def test_tls_is_refused_up_front_because_the_server_has_none_yet():
-    with pytest.raises(ConfigError, match="tls"):
-        DistLockClient.from_url("distlock://a:b@h?tls=true")
+def test_tls_flags_default_to_full_verification_and_come_from_the_url():
+    s = ClientSettings.from_url("distlock://a:b@h")
+    assert (s.tls, s.tls_verify_ca, s.tls_verify_host, s.ca_file_path) == (False, True, True, None)
+    s = ClientSettings.from_url("distlock://a:b@h?tls=1&tls_verify_ca=no&tls_verify_host=off&ca_file_path=%2Fetc%2Fca.pem")
+    assert (s.tls, s.tls_verify_ca, s.tls_verify_host, s.ca_file_path) == (True, False, False, "/etc/ca.pem")
+    assert ClientSettings.from_url("distlock://a:b@h?ca_file_content=PEM%0Atext").ca_file_content == "PEM\ntext"
+    with pytest.raises(ConfigError, match="only one of"):
+        ClientSettings.from_url("distlock://a:b@h?ca_file_path=/x&ca_file_content=y")
+    with pytest.raises(ConfigError, match="only one of"):
+        DistLockClient(client_id="a", password="b", host="h", ca_file_path="/x", ca_file_content="y")
+    with pytest.raises(ConfigError, match="tls_verify_ca"):
+        ClientSettings.from_url("distlock://a:b@h?tls_verify_ca=maybe")
+    assert DistLockClient(client_id="a", password="b", host="h", tls=True).settings.tls is True
 
 
 def test_from_env(monkeypatch):

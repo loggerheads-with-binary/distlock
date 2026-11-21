@@ -43,8 +43,6 @@ class DistLockClient:
                 settings = ClientSettings(**fields)
             except ValidationError as e:
                 raise ConfigError(validation_message(e)) from None
-        if settings.tls:
-            raise ConfigError("tls=true is not supported yet: the distlock server speaks plaintext only")
         self._settings = settings
         try:
             self._native = _native.NativeClient(
@@ -55,6 +53,10 @@ class DistLockClient:
                 settings.namespace,
                 settings.pool_size,
                 settings.tls,
+                settings.tls_verify_ca,
+                settings.tls_verify_host,
+                settings.ca_file_path,
+                settings.ca_file_content,
                 settings.default_ttl,
             )
         except _native.NativeError as e:
@@ -65,7 +67,7 @@ class DistLockClient:
 
     @classmethod
     def from_url(cls, url: str) -> "DistLockClient":
-        """``distlock://client_id:password@host[:port][/namespace][?pool_size=&tls=&default_ttl=]``
+        """``distlock://client_id:password@host[:port][/namespace][?pool_size=&tls=&tls_verify_ca=&tls_verify_host=&ca_file_path=&ca_file_content=&default_ttl=]``
 
         See :meth:`ClientSettings.from_url` for the details.
         """

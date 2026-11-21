@@ -80,9 +80,36 @@ Every check logs in afresh and POSTs a JSON report to the OK or the error webhoo
 JSON format and exit codes are in the [`distlock-client` README](crates/distlock-client/README.md#distlock-health).
 From Python, `await client.stats()` (or `client.stats_sync()`) returns the same figures.
 
+## TLS with your own certificate and CA
+Pass the server a certificate and key, and tell clients which CA to trust. For an internal service the
+simplest setup is your own CA:
+```bash
+KEY="-newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -pkeyopt ec_param_enc:named_curve -nodes"
+openssl req -x509 $KEY -days 3650 -keyout ca.key -out ca.crt -subj "/CN=distlock CA" \
+  -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign"
+openssl req -new $KEY -keyout server.key -out server.csr -subj "/CN=distlock-server"
+printf 'subjectAltName=DNS:locks.internal.example,IP:10.0.0.5\nbasicConstraints=CA:FALSE\nkeyUsage=digitalSignature\nextendedKeyUsage=serverAuth\n' > server.ext
+openssl x509 -req -sha256 -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 365 -extfile server.ext -out server.crt
+DISTLOCK_TLS_CERT_FILE=server.crt DISTLOCK_TLS_KEY_FILE=server.key distlock-server   # keep ca.key offline
+```
+Give `ca.crt` to the clients, as a file or as text. Either field works; set one:
+```python
+DistLockClient.from_url("distlock://billing:s3cret@10.0.0.5:7878?tls=true&ca_file_path=/etc/distlock/ca.crt")
+DistLockClient(client_id="billing", password="s3cret", host="10.0.0.5", tls=True, ca_file_content=ca_pem_text)
+```
+Clients check the certificate in two independent ways, both on by default: `tls_verify_ca` (chains to a
+trusted CA) and `tls_verify_host` (names the host or IP in the URL, via `subjectAltName`). Turning off
+one gives "CA only" or "name only"; both off encrypts without authenticating the server. With a public
+CA's certificate clients need no CA file. The full guide, with renewal, intermediate CAs and a table of
+error messages, is in the [server README](crates/distlock-server/README.md#tls); the client side is in the
+[Rust](crates/distlock-client/README.md#tls) and [Python](python/README.md) READMEs.
+
 ## Things to know before you deploy
 
-* **No TLS yet.** Bind the server to a private interface. Never expose it on an untrusted network.
+* **TLS is optional and off by default.** Without `DISTLOCK_TLS_CERT_FILE` and `DISTLOCK_TLS_KEY_FILE` the
+  server speaks plaintext: bind it to a private interface and never expose it on an untrusted network.
+  Clients choose how strictly to verify the certificate with two flags (`tls_verify_ca`, `tls_verify_host`);
+  see the [server](crates/distlock-server/README.md#tls) and [Python](python/README.md) READMEs.
 * **State is in memory.** After a restart the server refuses lock requests for `DISTLOCK_STARTUP_GRACE_MS`
   so that leases from the old process run out. Keep that value at or above `DISTLOCK_MAX_TTL_MS`.
 * **Use fencing tokens.** Every grant carries a strictly increasing token. Pass it to the resource you

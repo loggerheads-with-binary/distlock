@@ -161,3 +161,27 @@ async fn interval_mode_keeps_checking_and_switches_webhook_when_the_server_dies(
     child.kill().unwrap();
     let _ = child.wait();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tls_flags_select_which_certificate_checks_run() {
+    let pki = Pki::new();
+    // Trusted CA, but the certificate names someone else.
+    let srv = tls_server(&pki.issued("wrong-name", wrong_names())).await;
+    let url = format!("distlock://billing:pw-billing@{}?tls=true", srv.addr);
+    let ca = pki.ca_file().display().to_string();
+    for (extra, want, mode) in [
+        (vec![], 1, "full verification must reject a wrong name"),
+        (vec!["--no-verify-host"], 0, "CA only"),
+        (
+            vec!["--no-verify-ca"],
+            1,
+            "name only, and the name is wrong",
+        ),
+        (vec!["--no-verify-ca", "--no-verify-host"], 0, "none"),
+    ] {
+        let mut args = vec!["--ca-file", ca.as_str()];
+        args.extend(extra);
+        let out = health(s(&args), url.clone()).await;
+        assert_eq!(out.status.code(), Some(want), "{mode}: {out:?}");
+    }
+}

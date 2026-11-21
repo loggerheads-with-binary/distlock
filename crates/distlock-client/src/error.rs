@@ -6,8 +6,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     #[error("invalid configuration: {0}")]
     Config(String),
-    #[error("TLS is not supported yet: the distlock server speaks plaintext only")]
-    TlsUnsupported,
+    /// TLS could not be set up (bad CA file, bad server name) or the server's certificate was
+    /// rejected under the verification settings in use.
+    #[error("TLS: {0}")]
+    Tls(String),
     #[error("authentication failed: {0}")]
     Auth(String),
     #[error("cannot connect to {addr}: {reason}")]
@@ -58,7 +60,7 @@ impl Error {
     pub fn kind(&self) -> &'static str {
         match self {
             Error::Config(_) => "config",
-            Error::TlsUnsupported => "tls_unsupported",
+            Error::Tls(_) => "tls",
             Error::Auth(_) => "auth",
             Error::Connect { .. } => "connect",
             Error::NotConnected => "not_connected",

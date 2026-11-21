@@ -33,16 +33,22 @@ distlock-proto = { version = "0.2.0", path = "../distlock-proto" }
 futures-util = { version = "0.3.34", features = ["sink"] }
 getrandom = "0.4.3"
 prost = "0.14.6"
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pki-types = { version = "1.16.0", features = ["std"] }
+rustls-webpki = { version = "0.103.17", default-features = false, features = ["ring", "std"] }
 serde_json = { version = "1.0.154", optional = true }
 socket2 = { version = "0.6.5", features = ["all"] }
 thiserror = "2.0.21"
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
 tokio-util = { version = "0.7.20", features = ["codec"] }
 tracing = "0.1.44"
 ureq = { version = "3.5.2", default-features = false, features = ["rustls"], optional = true }
+webpki-roots = "1.0.12"
 
 [dev-dependencies]
 bcrypt = "0.19.3"
 distlock-server = { path = "../distlock-server" }
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
 serde_json = "1.0.154"
 tempfile = "3.27.0"

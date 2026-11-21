@@ -14,6 +14,11 @@
 //! server is healthy, or to `--error-webhook` (also `DISTLOCK_ERROR_WEBHOOK`) when it is not. Either
 //! may be left out. Works in one-shot mode too.
 //!
+//! TLS: `--tls` (or `?tls=true` in the URL) turns it on. It then checks the server certificate's
+//! chain (`--ca-file PEM` names the trusted CA, else public roots are used) and its name. The two
+//! checks are independent: `--no-verify-host` skips the name ("CA only"), `--no-verify-ca` skips the
+//! chain ("name only", self-signed passes), both skip everything (encryption only).
+//!
 //! Exit status (one-shot): 0 healthy, 1 cannot connect / log in / get stats, 2 bad usage, 3 the
 //! server is in its startup grace period and `--require-ready` was given. Watch mode only exits on
 //! bad usage (2).
@@ -26,6 +31,7 @@ use serde_json::{Value, json};
 
 const USAGE: &str = "usage: distlock-health [--url URL | --url -] [--require-ready] [--timeout SECS]\n\
                      \x20                       [--interval SECS] [--ok-webhook URL] [--error-webhook URL]\n\
+                     \x20                       [--tls] [--no-verify-ca] [--no-verify-host] [--ca-file PEM]\n\
                      URL: distlock://CLIENT_ID:PASSWORD@HOST[:PORT], else $DISTLOCK_URL, else stdin\n\
                      webhooks: else $DISTLOCK_OK_WEBHOOK / $DISTLOCK_ERROR_WEBHOOK (http:// or https://)";
 
@@ -36,6 +42,10 @@ struct Args {
     interval: Option<Duration>,
     ok_webhook: Option<String>,
     error_webhook: Option<String>,
+    tls: bool,
+    no_verify_ca: bool,
+    no_verify_host: bool,
+    ca_file: Option<String>,
 }
 
 fn secs_arg(flag: &str, v: Option<String>) -> Result<Duration, String> {
@@ -66,6 +76,10 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
         interval: None,
         ok_webhook: None,
         error_webhook: None,
+        tls: false,
+        no_verify_ca: false,
+        no_verify_host: false,
+        ca_file: None,
     };
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -73,6 +87,10 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             "--require-ready" => a.require_ready = true,
             "--timeout" => a.timeout = secs_arg("--timeout", it.next())?,
             "--interval" => a.interval = Some(secs_arg("--interval", it.next())?),
+            "--tls" => a.tls = true,
+            "--no-verify-ca" => a.no_verify_ca = true,
+            "--no-verify-host" => a.no_verify_host = true,
+            "--ca-file" => a.ca_file = Some(it.next().ok_or("--ca-file needs a value")?),
             "--ok-webhook" => a.ok_webhook = Some(it.next().ok_or("--ok-webhook needs a value")?),
             "--error-webhook" => {
                 a.error_webhook = Some(it.next().ok_or("--error-webhook needs a value")?);
@@ -279,7 +297,15 @@ async fn main() -> ExitCode {
         .and_then(|u| DistLockClient::from_url(&u).map_err(|e| e.to_string()))
     {
         // One connection is plenty for a probe.
-        Ok(c) => DistLockClient { pool_size: 1, ..c },
+        Ok(c) => DistLockClient {
+            pool_size: 1,
+            // Flags can only add TLS or relax a check; they never undo what the URL asks for.
+            tls: c.tls || args.tls,
+            tls_verify_ca: c.tls_verify_ca && !args.no_verify_ca,
+            tls_verify_host: c.tls_verify_host && !args.no_verify_host,
+            ca_file_path: args.ca_file.clone().map(Into::into).or(c.ca_file_path),
+            ..c
+        },
         Err(e) => return usage(e),
     };
     let server = format!("{}:{}", client.host, client.port);

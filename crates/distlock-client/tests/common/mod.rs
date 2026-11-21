@@ -158,8 +158,8 @@ pub fn client_for(addr: SocketAddr, user: &str) -> DistLockClient {
         port: addr.port(),
         namespace: None,
         pool_size: 2,
-        tls: false,
         default_ttl: Duration::from_secs(30),
+        ..DistLockClient::default()
     }
 }
 
@@ -324,5 +324,82 @@ impl Proxy {
 impl Drop for Proxy {
     fn drop(&mut self) {
         self.task.abort();
+    }
+}
+
+// ---------------------------------------------------------------------------- test PKI
+use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair, SanType};
+use std::net::{IpAddr, Ipv4Addr};
+use std::path::PathBuf;
+use tempfile::TempDir;
+pub struct Pem {
+    pub cert: PathBuf,
+    pub key: PathBuf,
+}
+pub fn names(dns: &str) -> Vec<SanType> {
+    vec![
+        SanType::DnsName(dns.try_into().unwrap()),
+        SanType::IpAddress(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+    ]
+}
+/// Wrong-name certificates must not name 127.0.0.1 either.
+pub fn wrong_names() -> Vec<SanType> {
+    vec![SanType::DnsName("wrong.example".try_into().unwrap())]
+}
+pub struct Pki {
+    pub dir: TempDir,
+    pub ca_pem: PathBuf,
+    ca: Issuer<'static, KeyPair>,
+}
+impl Pki {
+    pub fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let key = KeyPair::generate().unwrap();
+        let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let cert = params.self_signed(&key).unwrap();
+        let ca_pem = dir.path().join("ca.pem");
+        std::fs::write(&ca_pem, cert.pem()).unwrap();
+        Self {
+            dir,
+            ca_pem,
+            ca: Issuer::new(params, key),
+        }
+    }
+    fn write(&self, name: &str, cert: &str, key: &KeyPair) -> Pem {
+        let p = Pem {
+            cert: self.dir.path().join(format!("{name}.crt")),
+            key: self.dir.path().join(format!("{name}.key")),
+        };
+        std::fs::write(&p.cert, cert).unwrap();
+        std::fs::write(&p.key, key.serialize_pem()).unwrap();
+        p
+    }
+    pub fn issued(&self, name: &str, sans: Vec<SanType>) -> Pem {
+        let key = KeyPair::generate().unwrap();
+        let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        params.subject_alt_names = sans;
+        let cert = params.signed_by(&key, &self.ca).unwrap();
+        self.write(name, &cert.pem(), &key)
+    }
+    pub fn self_signed(&self, name: &str, sans: Vec<SanType>) -> Pem {
+        let key = KeyPair::generate().unwrap();
+        let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        params.subject_alt_names = sans;
+        let cert = params.self_signed(&key).unwrap();
+        self.write(name, &cert.pem(), &key)
+    }
+}
+pub async fn tls_server(pem: &Pem) -> TestServer {
+    let (cert, key) = (pem.cert.clone(), pem.key.clone());
+    TestServer::start_with("127.0.0.1:0".parse().unwrap(), move |c| {
+        c.tls_cert_file = Some(cert);
+        c.tls_key_file = Some(key);
+    })
+    .await
+}
+impl Pki {
+    pub fn ca_file(&self) -> PathBuf {
+        self.ca_pem.clone()
     }
 }

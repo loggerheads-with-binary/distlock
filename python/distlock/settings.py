@@ -5,12 +5,12 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qsl, unquote, urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator, model_validator
 
 from .errors import ConfigError
 
 _SCHEME = "distlock"
-_QUERY_PARAMETERS = ("pool_size", "tls", "default_ttl")
+_QUERY_PARAMETERS = ("pool_size", "tls", "tls_verify_ca", "tls_verify_host", "ca_file_path", "ca_file_content", "default_ttl")
 #: The server counts leases in 32-bit milliseconds.
 _MAX_TTL_SECONDS = 4_000_000.0
 
@@ -41,10 +41,30 @@ class ClientSettings(BaseModel):
     namespace: Optional[str] = None
     #: TCP connections in the pool. They all belong to one session.
     pool_size: int = Field(default=4, ge=1, le=256)
-    #: TLS is not supported by the server yet; ``True`` is rejected when connecting.
+    #: Connect over TLS. The server must have a certificate configured.
     tls: bool = False
+    #: With ``tls``: require the server certificate to chain to a trusted CA (``ca_file_path``, or the
+    #: built-in public roots).
+    tls_verify_ca: bool = True
+    #: With ``tls``: require the server certificate to name ``host`` (a DNS name or an IP address).
+    #: The two flags give four modes: both on is full verification; ``tls_verify_host`` off is
+    #: "CA only"; ``tls_verify_ca`` off is "name only" (a self-signed certificate passes); both off
+    #: encrypts without authenticating the server, which stops passive eavesdropping only.
+    tls_verify_host: bool = True
+    #: PEM file of CA certificates to trust instead of the built-in public roots. Set this or
+    #: ``ca_file_content``, not both.
+    ca_file_path: Optional[str] = Field(default=None, min_length=1)
+    #: The same CA certificates as PEM *text*, for when there is no file (a secret from a vault or an
+    #: environment variable).
+    ca_file_content: Optional[str] = Field(default=None, min_length=1)
     #: Lease length, in seconds, for locks that do not set their own ``ttl``.
     default_ttl: float = Field(default=30.0, gt=0, le=_MAX_TTL_SECONDS)
+
+    @model_validator(mode="after")
+    def _one_ca_source(self) -> "ClientSettings":
+        if self.ca_file_path is not None and self.ca_file_content is not None:
+            raise ValueError("set only one of ca_file_path and ca_file_content")
+        return self
 
     @field_validator("namespace")
     @classmethod
@@ -57,7 +77,7 @@ class ClientSettings(BaseModel):
 
     @classmethod
     def from_url(cls, url: str) -> "ClientSettings":
-        """Parse ``distlock://client_id:password@host[:port][/namespace][?pool_size=&tls=&default_ttl=]``.
+        """Parse ``distlock://client_id:password@host[:port][/namespace][?pool_size=&tls=&tls_verify_ca=&tls_verify_host=&ca_file_path=&ca_file_content=&default_ttl=]``.
 
         User and password may be percent-encoded. The path, if any, is the namespace (one segment).
         ``default_ttl`` is in seconds. Unknown query parameters are an error, not ignored.

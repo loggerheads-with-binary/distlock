@@ -4,7 +4,15 @@ use std::time::Duration;
 use crate::client::DistLockClient;
 use crate::error::{Error, Result};
 
-const QUERY_KEYS: [&str; 3] = ["pool_size", "tls", "default_ttl"];
+const QUERY_KEYS: [&str; 7] = [
+    "pool_size",
+    "tls",
+    "tls_verify_ca",
+    "tls_verify_host",
+    "ca_file_path",
+    "ca_file_content",
+    "default_ttl",
+];
 
 fn bad<T>(m: impl Into<String>) -> Result<T> {
     Err(Error::Config(m.into()))
@@ -109,13 +117,20 @@ impl DistLockClient {
             let invalid = || Error::Config(format!("invalid distlock URL: {key} = {value:?}"));
             match key.as_str() {
                 "pool_size" => c.pool_size = value.parse().map_err(|_| invalid())?,
-                "tls" => {
-                    c.tls = match value.to_ascii_lowercase().as_str() {
+                "tls" | "tls_verify_ca" | "tls_verify_host" => {
+                    let on = match value.to_ascii_lowercase().as_str() {
                         "1" | "true" | "yes" | "on" => true,
                         "0" | "false" | "no" | "off" => false,
                         _ => return Err(invalid()),
+                    };
+                    match key.as_str() {
+                        "tls" => c.tls = on,
+                        "tls_verify_ca" => c.tls_verify_ca = on,
+                        _ => c.tls_verify_host = on,
                     }
                 }
+                "ca_file_path" => c.ca_file_path = Some(value.clone().into()),
+                "ca_file_content" => c.ca_file_content = Some(value.clone()),
                 _ => {
                     let secs: f64 = value.parse().map_err(|_| invalid())?;
                     c.default_ttl = Duration::try_from_secs_f64(secs).map_err(|_| invalid())?;
@@ -157,6 +172,21 @@ mod tests {
     }
 
     #[test]
+    fn parses_tls_flags() {
+        let c = DistLockClient::from_url("distlock://a:b@h").unwrap();
+        assert!(!c.tls && c.tls_verify_ca && c.tls_verify_host && c.ca_file_path.is_none());
+        let c = DistLockClient::from_url(
+            "distlock://a:b@h?tls=1&tls_verify_ca=0&tls_verify_host=no&ca_file_path=%2Fetc%2Fca.pem",
+        )
+        .unwrap();
+        assert!(c.tls && !c.tls_verify_ca && !c.tls_verify_host);
+        assert_eq!(
+            c.ca_file_path.as_deref(),
+            Some(std::path::Path::new("/etc/ca.pem"))
+        );
+    }
+
+    #[test]
     fn rejects_what_python_rejects() {
         for url in [
             "http://a:b@h",
@@ -169,6 +199,7 @@ mod tests {
             "distlock://a:b@h?bogus=1",
             "distlock://a:b@h?tls=1&tls=0",
             "distlock://a:b@h?tls=maybe",
+            "distlock://a:b@h?tls_verify_ca=maybe",
         ] {
             assert!(DistLockClient::from_url(url).is_err(), "{url}");
         }

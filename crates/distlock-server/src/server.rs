@@ -33,6 +33,11 @@ pub struct Server {
 impl Server {
     /// Bind the listening socket and build the engine. Nothing is served until [`run`](Self::run).
     pub async fn bind(cfg: ServerConfig, users: UserDb) -> io::Result<Self> {
+        // Before binding: a bad certificate must stop start-up, not leave a half-working listener.
+        let tls = match (&cfg.tls_cert_file, &cfg.tls_key_file) {
+            (Some(cert), Some(key)) => Some(crate::tls::acceptor(cert, key)?),
+            _ => None,
+        };
         let listener = TcpListener::bind(cfg.bind_addr).await?;
         let mut lock_cfg = cfg.lock.clone();
         // Fencing tokens must keep increasing across restarts of this memory-only server.
@@ -52,6 +57,7 @@ impl Server {
             actor: tx,
             next_conn: AtomicU64::new(1),
             sampler: tokio::sync::Mutex::new(Sampler::new()),
+            tls,
         });
         Ok(Self {
             listener,

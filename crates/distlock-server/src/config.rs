@@ -25,6 +25,10 @@ pub struct ServerConfig {
     pub ping_interval: Duration,
     pub idle_connection_timeout: Duration,
     pub users_file: PathBuf,
+    /// PEM certificate chain and PEM private key. Both set: the listener speaks TLS only. Neither:
+    /// plaintext.
+    pub tls_cert_file: Option<PathBuf>,
+    pub tls_key_file: Option<PathBuf>,
     pub auth_max_concurrent_bcrypt: usize,
     pub max_connections_per_session: usize,
     pub session_idle_timeout: Duration,
@@ -136,6 +140,14 @@ impl ServerConfig {
         let users_file = PathBuf::from(
             raw(get, "DISTLOCK_USERS_FILE").unwrap_or_else(|| "./config/users.json".to_owned()),
         );
+        let tls_cert_file = raw(get, "DISTLOCK_TLS_CERT_FILE").map(PathBuf::from);
+        let tls_key_file = raw(get, "DISTLOCK_TLS_KEY_FILE").map(PathBuf::from);
+        if tls_cert_file.is_some() != tls_key_file.is_some() {
+            return Err(err(
+                "DISTLOCK_TLS_CERT_FILE",
+                "DISTLOCK_TLS_CERT_FILE and DISTLOCK_TLS_KEY_FILE must be set together",
+            ));
+        }
         let auth_max_concurrent_bcrypt = at_least(
             "DISTLOCK_AUTH_MAX_CONCURRENT_BCRYPT",
             parse(get, "DISTLOCK_AUTH_MAX_CONCURRENT_BCRYPT", 4)?,
@@ -262,6 +274,8 @@ impl ServerConfig {
             ping_interval,
             idle_connection_timeout,
             users_file,
+            tls_cert_file,
+            tls_key_file,
             auth_max_concurrent_bcrypt,
             max_connections_per_session,
             session_idle_timeout,
@@ -281,10 +295,10 @@ impl ServerConfig {
                 self.lock.max_ttl.as_millis()
             ));
         }
-        if self.bind_addr.ip().is_unspecified() {
+        if self.tls_cert_file.is_none() && self.bind_addr.ip().is_unspecified() {
             out.push(format!(
                 "listening on {} (all interfaces) with no TLS: credentials and traffic are readable on the wire. \
-                 Bind to a private interface.",
+                 Set DISTLOCK_TLS_CERT_FILE and DISTLOCK_TLS_KEY_FILE, or bind to a private interface.",
                 self.bind_addr
             ));
         }
@@ -344,6 +358,23 @@ mod tests {
                 "{k} is in .env.example but never read"
             );
         }
+    }
+
+    #[test]
+    fn tls_files_must_come_as_a_pair() {
+        let one = |k: &str| ServerConfig::from_lookup(lookup(&[(k, "/x.pem")]));
+        assert_eq!(
+            one("DISTLOCK_TLS_CERT_FILE").unwrap_err().var,
+            "DISTLOCK_TLS_CERT_FILE"
+        );
+        assert!(one("DISTLOCK_TLS_KEY_FILE").is_err());
+        let both = ServerConfig::from_lookup(lookup(&[
+            ("DISTLOCK_TLS_CERT_FILE", "/c.pem"),
+            ("DISTLOCK_TLS_KEY_FILE", "/k.pem"),
+        ]))
+        .unwrap();
+        assert!(both.tls_cert_file.is_some() && both.tls_key_file.is_some());
+        assert!(ServerConfig::default().tls_cert_file.is_none());
     }
 
     #[test]
