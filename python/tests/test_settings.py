@@ -164,3 +164,28 @@ def test_locks_validate_their_arguments_when_created():
         client.Semaphore("x", capacity=0)
     with pytest.raises(ConfigError):
         client.Semaphore("x", capacity=2, permits=3)
+
+
+def test_explicit_tls_arguments_beat_the_url():
+    url = "distlock://a:b@h?tls=false&tls_verify_ca=true&tls_verify_host=true&ca_file_path=/from/url"
+    s = ClientSettings.from_url(url)
+    assert (s.tls, s.ca_file_path) == (False, "/from/url")
+    s = ClientSettings.from_url(url, tls=True, tls_verify_ca=False, tls_verify_host=False)
+    assert (s.tls, s.tls_verify_ca, s.tls_verify_host) == (True, False, False)
+    assert s.ca_file_path == "/from/url", "settings that were not given keep the URL's value"
+    # An explicit CA source replaces the URL's other one instead of clashing with it.
+    s = ClientSettings.from_url(url, ca_file_content="PEM")
+    assert (s.ca_file_content, s.ca_file_path) == ("PEM", None)
+    s = ClientSettings.from_url("distlock://a:b@h?ca_file_content=x", ca_file_path="/explicit")
+    assert (s.ca_file_path, s.ca_file_content) == ("/explicit", None)
+    with pytest.raises(ConfigError, match="only one of"):
+        ClientSettings.from_url(url, ca_file_path="/a", ca_file_content="b")
+    # `False` is a value, not "not given".
+    assert ClientSettings.from_url("distlock://a:b@h?tls=true", tls=False).tls is False
+    c = DistLockClient.from_url("distlock://a:b@h", tls=True, ca_file_content="PEM")
+    assert c.settings.tls and c.settings.ca_file_content == "PEM"
+
+
+def test_from_env_passes_the_overrides_on(monkeypatch):
+    monkeypatch.setenv("DISTLOCK_URL", "distlock://a:b@h?tls=false")
+    assert DistLockClient.from_env(tls=True).settings.tls is True

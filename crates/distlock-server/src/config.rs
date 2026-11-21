@@ -25,8 +25,10 @@ pub struct ServerConfig {
     pub ping_interval: Duration,
     pub idle_connection_timeout: Duration,
     pub users_file: PathBuf,
-    /// PEM certificate chain and PEM private key. Both set: the listener speaks TLS only. Neither:
-    /// plaintext.
+    /// `DISTLOCK_TLS_ENABLED`. `true`: the listener speaks TLS only, and the server refuses to start
+    /// without a usable certificate and key. `false`: plaintext.
+    pub tls_enabled: bool,
+    /// PEM certificate chain and PEM private key. Required when `tls_enabled`, an error otherwise.
     pub tls_cert_file: Option<PathBuf>,
     pub tls_key_file: Option<PathBuf>,
     pub auth_max_concurrent_bcrypt: usize,
@@ -142,10 +144,19 @@ impl ServerConfig {
         );
         let tls_cert_file = raw(get, "DISTLOCK_TLS_CERT_FILE").map(PathBuf::from);
         let tls_key_file = raw(get, "DISTLOCK_TLS_KEY_FILE").map(PathBuf::from);
-        if tls_cert_file.is_some() != tls_key_file.is_some() {
+        let tls_enabled = parse(get, "DISTLOCK_TLS_ENABLED", false)?;
+        if tls_enabled && (tls_cert_file.is_none() || tls_key_file.is_none()) {
             return Err(err(
-                "DISTLOCK_TLS_CERT_FILE",
-                "DISTLOCK_TLS_CERT_FILE and DISTLOCK_TLS_KEY_FILE must be set together",
+                "DISTLOCK_TLS_ENABLED",
+                "TLS is enabled, so DISTLOCK_TLS_CERT_FILE and DISTLOCK_TLS_KEY_FILE must both be set",
+            ));
+        }
+        // Setting a certificate and silently serving plaintext would be a dangerous surprise.
+        if !tls_enabled && (tls_cert_file.is_some() || tls_key_file.is_some()) {
+            return Err(err(
+                "DISTLOCK_TLS_ENABLED",
+                "DISTLOCK_TLS_CERT_FILE or DISTLOCK_TLS_KEY_FILE is set but TLS is not enabled: \
+                 set DISTLOCK_TLS_ENABLED=true, or unset the files",
             ));
         }
         let auth_max_concurrent_bcrypt = at_least(
@@ -274,6 +285,7 @@ impl ServerConfig {
             ping_interval,
             idle_connection_timeout,
             users_file,
+            tls_enabled,
             tls_cert_file,
             tls_key_file,
             auth_max_concurrent_bcrypt,
@@ -295,10 +307,10 @@ impl ServerConfig {
                 self.lock.max_ttl.as_millis()
             ));
         }
-        if self.tls_cert_file.is_none() && self.bind_addr.ip().is_unspecified() {
+        if !self.tls_enabled && self.bind_addr.ip().is_unspecified() {
             out.push(format!(
                 "listening on {} (all interfaces) with no TLS: credentials and traffic are readable on the wire. \
-                 Set DISTLOCK_TLS_CERT_FILE and DISTLOCK_TLS_KEY_FILE, or bind to a private interface.",
+                 Set DISTLOCK_TLS_ENABLED=true (with a certificate and key), or bind to a private interface.",
                 self.bind_addr
             ));
         }
@@ -361,20 +373,25 @@ mod tests {
     }
 
     #[test]
-    fn tls_files_must_come_as_a_pair() {
-        let one = |k: &str| ServerConfig::from_lookup(lookup(&[(k, "/x.pem")]));
-        assert_eq!(
-            one("DISTLOCK_TLS_CERT_FILE").unwrap_err().var,
-            "DISTLOCK_TLS_CERT_FILE"
-        );
-        assert!(one("DISTLOCK_TLS_KEY_FILE").is_err());
-        let both = ServerConfig::from_lookup(lookup(&[
+    fn tls_needs_the_flag_and_both_files() {
+        let cfg = |pairs: &[(&str, &str)]| ServerConfig::from_lookup(lookup(pairs));
+        let (cert, key) = (
             ("DISTLOCK_TLS_CERT_FILE", "/c.pem"),
             ("DISTLOCK_TLS_KEY_FILE", "/k.pem"),
-        ]))
-        .unwrap();
-        assert!(both.tls_cert_file.is_some() && both.tls_key_file.is_some());
-        assert!(ServerConfig::default().tls_cert_file.is_none());
+        );
+        let on = ("DISTLOCK_TLS_ENABLED", "true");
+        // Enabled without both files: refuse.
+        assert_eq!(cfg(&[on]).unwrap_err().var, "DISTLOCK_TLS_ENABLED");
+        assert!(cfg(&[on, cert]).is_err());
+        assert!(cfg(&[on, key]).is_err());
+        // Files without the flag: refuse, rather than quietly serve plaintext.
+        assert!(cfg(&[cert, key]).is_err());
+        assert!(cfg(&[cert]).is_err());
+        assert!(cfg(&[("DISTLOCK_TLS_ENABLED", "yes")]).is_err());
+        let c = cfg(&[on, cert, key]).unwrap();
+        assert!(c.tls_enabled && c.tls_cert_file.is_some() && c.tls_key_file.is_some());
+        let off = cfg(&[("DISTLOCK_TLS_ENABLED", "false")]).unwrap();
+        assert!(!off.tls_enabled && !ServerConfig::default().tls_enabled);
     }
 
     #[test]

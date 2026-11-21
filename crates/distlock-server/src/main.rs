@@ -32,7 +32,7 @@ async fn main() -> ExitCode {
     info!(file = %cfg.users_file.display(), users = users.user_count(), "users loaded");
 
     let bind_addr = cfg.bind_addr;
-    let tls = cfg.tls_cert_file.is_some();
+    let tls = cfg.tls_enabled;
     let server = match Server::bind(cfg, users).await {
         Ok(server) => server,
         Err(e) => {

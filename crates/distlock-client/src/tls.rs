@@ -160,3 +160,56 @@ pub(crate) fn setup(
         name,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    use super::*;
+    use rcgen::{CertificateParams, KeyPair, SanType};
+
+    /// The name check ("name only" mode) against a certificate with several names, a wildcard and
+    /// several addresses, as `scripts/tls/server-cert.sh` makes them.
+    #[test]
+    fn names_wildcards_and_addresses_in_one_certificate() {
+        let mut params = CertificateParams::new(vec![
+            "*.example.test".to_owned(),
+            "exact.example.org".to_owned(),
+        ])
+        .unwrap();
+        params.subject_alt_names.extend([
+            SanType::IpAddress(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5))),
+            SanType::IpAddress(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 6))),
+        ]);
+        let cert = params.self_signed(&KeyPair::generate().unwrap()).unwrap();
+        let verifier = Verifier {
+            chain: None,
+            check_host: true,
+            algs: rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        };
+        let accepts = |host: &str| {
+            let name = ServerName::try_from(host.to_owned()).unwrap();
+            verifier
+                .verify_server_cert(cert.der(), &[], &name, &[], UnixTime::now())
+                .is_ok()
+        };
+        for ok in [
+            "api.example.test",
+            "x.example.test",
+            "exact.example.org",
+            "10.0.0.5",
+            "10.0.0.6",
+        ] {
+            assert!(accepts(ok), "{ok} should match");
+        }
+        for bad in [
+            "example.test",      // a wildcard needs a label in front
+            "a.b.example.test",  // and covers exactly one
+            "other.example.org", // not the exact name
+            "api.example.org",
+            "10.0.0.7", // not listed
+        ] {
+            assert!(!accepts(bad), "{bad} should not match");
+        }
+    }
+}

@@ -34,9 +34,14 @@ impl Server {
     /// Bind the listening socket and build the engine. Nothing is served until [`run`](Self::run).
     pub async fn bind(cfg: ServerConfig, users: UserDb) -> io::Result<Self> {
         // Before binding: a bad certificate must stop start-up, not leave a half-working listener.
-        let tls = match (&cfg.tls_cert_file, &cfg.tls_key_file) {
-            (Some(cert), Some(key)) => Some(crate::tls::acceptor(cert, key)?),
-            _ => None,
+        let tls = match (cfg.tls_enabled, &cfg.tls_cert_file, &cfg.tls_key_file) {
+            (true, Some(cert), Some(key)) => Some(crate::tls::acceptor(cert, key)?),
+            (true, _, _) => {
+                return Err(io::Error::other(
+                    "TLS: enabled, but the certificate or the key file is not set",
+                ));
+            }
+            (false, ..) => None,
         };
         let listener = TcpListener::bind(cfg.bind_addr).await?;
         let mut lock_cfg = cfg.lock.clone();
