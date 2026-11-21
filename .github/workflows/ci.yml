@@ -1,27 +1,31 @@
 name: CI
-
 # Runs on every pull request into main, so it can be a required check *before* merge
 # (Settings > Branches > branch protection > "Require status checks": lint, rust, python).
 # `merge_group` makes the same checks run in GitHub's merge queue, and `push` re-checks main itself.
+#
+# The release workflow calls this one with `build-artifacts: true`. Then, next to the checks, CI also
+# builds everything that gets released (binaries for every OS, wheels, the sdist) and uploads it as
+# workflow artifacts. The release workflow only downloads and publishes those, it builds nothing.
 on:
   pull_request:
     branches: [main]
   merge_group:
   push:
     branches: [main]
-  workflow_call: # the release workflow runs the same checks before publishing
-
+  workflow_call:
+    inputs:
+      build-artifacts:
+        description: Also build the release binaries, wheels and sdist, and upload them as artifacts
+        type: boolean
+        default: false
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 permissions:
   contents: read
-
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
-
 jobs:
   lint:
     name: lint
@@ -38,7 +42,6 @@ jobs:
         run: cargo doc --workspace --no-deps --locked
         env:
           RUSTDOCFLAGS: -D warnings
-
   rust:
     name: rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -54,7 +57,16 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y apache2-utils
       - run: cargo test --workspace --locked
-
+  # The health-check tool is released for Windows too, but the test suite is not run there. This keeps
+  # it compiling, so a Windows break shows up on the pull request and not when a release is cut.
+  windows:
+    name: distlock-health builds on windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p distlock-client --bin distlock-health --locked
   python:
     name: python ${{ matrix.python }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -63,6 +75,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
         python: ["3.11", "3.13"]
+        include:
+          # One leg also measures coverage, so there is no second job that builds and runs the same thing.
+          - { os: ubuntu-latest, python: "3.13", coverage: true }
+    env:
+      WITH_COVERAGE: ${{ matrix.coverage && !inputs.build-artifacts }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -84,6 +101,124 @@ jobs:
         run: |
           python -m venv .venv
           . .venv/bin/activate
-          pip install maturin pytest "pydantic>=2.5"
+          pip install maturin pytest pytest-cov "pydantic>=2.5"
           maturin develop
-          pytest
+          if [ "$WITH_COVERAGE" = true ]; then
+            pytest --cov=distlock --cov-report=xml --cov-report=term-missing
+            coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
+          else
+            pytest
+          fi
+      # Never blocks: a coverage upload problem must not fail CI or a release.
+      - uses: codecov/codecov-action@v5
+        if: env.WITH_COVERAGE == 'true'
+        with:
+          files: python/coverage.xml
+          flags: python
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+  # ------------------------------------------------------------------------------------------
+  # Release artifacts. Only when the release workflow asks; pull requests do not pay for them.
+  # They run beside the checks above, and the release workflow waits for the whole of this one.
+  # ------------------------------------------------------------------------------------------
+  binaries:
+    name: binaries (${{ matrix.target }})
+    if: ${{ inputs.build-artifacts }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux is built against musl: a static binary that runs on any distribution.
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl, archive: tar.gz, server: true }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, archive: tar.gz, server: true }
+          - { os: macos-latest, target: x86_64-apple-darwin, archive: tar.gz, server: true }
+          - { os: macos-latest, target: aarch64-apple-darwin, archive: tar.gz, server: true }
+          # The server is shipped only where CI runs its tests (Linux, macOS).
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, archive: zip, server: false }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: musl C toolchain (for ring)
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build
+        shell: bash
+        run: |
+          packages="-p distlock-client --bin distlock-health"
+          if [ "${{ matrix.server }}" = true ]; then packages="$packages -p distlock-server --bin distlock-server"; fi
+          cargo build --release --locked --target "${{ matrix.target }}" $packages
+      - name: Package
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          name="distlock-$version-${{ matrix.target }}"
+          exe=""; if [ "${{ matrix.archive }}" = zip ]; then exe=".exe"; fi
+          mkdir "$name"
+          cp "target/${{ matrix.target }}/release/distlock-health$exe" "$name/"
+          if [ "${{ matrix.server }}" = true ]; then cp "target/${{ matrix.target }}/release/distlock-server$exe" "$name/"; fi
+          cp LICENSE README.md "$name/"
+          mkdir out
+          if [ "${{ matrix.archive }}" = zip ]; then
+            7z a -tzip "out/$name.zip" "$name" >/dev/null
+            file="$name.zip"
+          else
+            tar -czf "out/$name.tar.gz" "$name"
+            file="$name.tar.gz"
+          fi
+          (cd out && shasum -a 256 "$file" > "$file.sha256")
+          ls -l out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.target }}
+          path: out/*
+          if-no-files-found: error
+  sdist:
+    name: build sdist
+    if: ${{ inputs.build-artifacts }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+          working-directory: python
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-sdist
+          path: python/dist
+          if-no-files-found: error
+  wheels:
+    name: wheel (${{ matrix.target }})
+    if: ${{ inputs.build-artifacts }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64, manylinux: auto }
+          - { os: ubuntu-latest, target: aarch64, manylinux: auto }
+          - { os: macos-latest, target: x86_64-apple-darwin }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: windows-latest, target: x64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux || 'off' }}
+          args: --release --locked --out dist
+          working-directory: python
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-wheel-${{ matrix.os }}-${{ matrix.target }}
+          path: python/dist
+          if-no-files-found: error
