@@ -3,7 +3,7 @@
 /// The oldest server release this client works with. A client that needs something a later server
 /// added (a new protocol feature, an auth mode) raises this; the user can lower or raise it per
 /// connection with `min_version`.
-pub(crate) const EXPECTED_SERVER_VERSION: &str = "0.4.0";
+pub(crate) const EXPECTED_SERVER_VERSION: &str = "0.5.0";
 
 /// What a server that does not report its version is taken to be: 0.3.0, the last release before
 /// servers started to say.
