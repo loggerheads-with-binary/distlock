@@ -16,8 +16,8 @@ workspace = true
 arc-swap = "1.9.5"
 bcrypt = "0.19.3"
 bytes = "1.12.2"
-distlock-core = { version = "0.3.0", path = "../distlock-core" }
-distlock-proto = { version = "0.3.0", path = "../distlock-proto" }
+distlock-core = { version = "0.4.0", path = "../distlock-core" }
+distlock-proto = { version = "0.4.0", path = "../distlock-proto" }
 dotenvy = "0.15.7"
 futures-util = { version = "0.3.34", features = ["sink"] }
 getrandom = "0.4.3"
