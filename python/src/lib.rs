@@ -98,8 +98,8 @@ fn state_name(state: State) -> &'static str {
 }
 
 /// `ResetUsersReport` as a tuple, in field order:
-/// `(added, removed, disabled, enabled, password_changed, sessions_closed, connections_closed, invoker_dropped)`.
-type ResetTuple = (u32, u32, u32, u32, u32, u32, u32, bool);
+/// `(added, removed, disabled, enabled, password_changed, sessions_closed, connections_closed, invoker_dropped, users_md5)`.
+type ResetTuple = (u32, u32, u32, u32, u32, u32, u32, bool, String);
 
 fn reset_tuple(r: ResetUsersReport) -> ResetTuple {
     (
@@ -111,6 +111,7 @@ fn reset_tuple(r: ResetUsersReport) -> ResetTuple {
         r.sessions_closed,
         r.connections_closed,
         r.invoker_dropped,
+        r.users_md5,
     )
 }
 
@@ -128,9 +129,22 @@ type ProcessTuple = (
 );
 /// `(counters, system, process)`; counters are `(version, uptime_ms, connections, sessions,
 /// connected_clients, locks_held, requests_queued, lock_names, events, in_startup_grace,
-/// startup_grace_remaining_ms)`. Nested because PyO3 converts tuples of at most 12 items.
+/// startup_grace_remaining_ms, users_md5)`. Nested because PyO3 converts tuples of at most 12 items.
 type StatsTuple = (
-    (String, u64, u32, u32, u32, u32, u32, u32, u32, bool, u32),
+    (
+        String,
+        u64,
+        u32,
+        u32,
+        u32,
+        u32,
+        u32,
+        u32,
+        u32,
+        bool,
+        u32,
+        String,
+    ),
     Option<SystemTuple>,
     Option<ProcessTuple>,
 );
@@ -149,6 +163,7 @@ fn stats_tuple(s: ServerStats) -> StatsTuple {
             s.events,
             s.in_startup_grace,
             s.startup_grace_remaining_ms,
+            s.users_md5,
         ),
         s.system.map(|y| {
             (

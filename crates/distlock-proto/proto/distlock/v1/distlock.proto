@@ -349,6 +349,9 @@ message ResetUsersOk {
   uint32 sessions_closed = 6;      // sessions of removed/disabled users that were ended
   uint32 connections_closed = 7;   // their TCP connections, closed by the server
   bool invoker_dropped = 8;        // the sender itself was thrown out; its connection closes after this reply
+  // MD5 (32 lowercase hex characters) of the users file now in force. Lets a caller check that every
+  // server in a fleet runs the same file. A change detector, not a security measure.
+  string users_md5 = 9;
 }
 
 // ---------------------------------------------------------------- stats
@@ -371,6 +374,9 @@ message StatsOk {
   uint32 startup_grace_remaining_ms = 11;
   SystemStats system = 12;
   ProcessStats process = 13;
+  // MD5 (32 lowercase hex characters) of the users file in force, kept in memory since the last load or
+  // reset. Empty when the server does not report it. A change detector, not a security measure.
+  string users_md5 = 14;
 }
 message SystemStats {
   uint64 total_memory_bytes = 1;

@@ -125,6 +125,9 @@ impl FileServer {
         }
     }
 
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
     /// Replace the file's contents: `(client_id, enabled)`.
     pub fn write(&self, users: &[(&str, bool)]) {
         write_users(&self.path, users);

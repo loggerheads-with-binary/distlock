@@ -61,13 +61,17 @@ class ServerStats:
     in_startup_grace: bool
     #: Seconds of startup grace left (0 when over).
     startup_grace_remaining: float
+    #: MD5 of the users file the server has in force: 32 lowercase hex characters, or ``""`` when the
+    #: server does not report it. It changes only when the server (re)loads the file. A change detector
+    #: for comparing servers, not a security measure.
+    users_md5: str
     system: Optional[SystemStats]
     process: Optional[ProcessStats]
 
     @classmethod
     def _from_native(cls, t: Tuple) -> "ServerStats":
         counters, system, process = t
-        version, uptime_ms, connections, sessions, clients, held, queued, names, events, grace, grace_ms = counters
+        version, uptime_ms, connections, sessions, clients, held, queued, names, events, grace, grace_ms, users_md5 = counters
         proc = None
         if process is not None:
             pid, cpu, mem, vmem, cpu_ms, files, limit = process
@@ -84,6 +88,7 @@ class ServerStats:
             events,
             grace,
             grace_ms / 1000,
+            users_md5,
             None if system is None else SystemStats(*system),
             proc,
         )

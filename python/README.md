@@ -51,7 +51,7 @@ pytest
 ```python
 client = DistLockClient.from_url("distlock://client_id:password@host:port/namespace?pool_size=5&tls=false&default_ttl=30")
 client = DistLockClient.from_env()                       # reads $DISTLOCK_URL
-stats = await client.stats()                              # health: CPU %, memory, open files, clients, locks (or stats_sync())
+stats = await client.stats()                              # health: CPU %, memory, open files, clients, locks, users_md5 (or stats_sync())
 client = DistLockClient(client_id="billing", password="s3cret", host="10.0.0.5", namespace="billing")
 ```
 
@@ -274,7 +274,8 @@ client then notices by itself. Users added or re-enabled can log in; a changed p
 | `added`, `removed`, `disabled`, `enabled`, `password_changed` | counts of users in each category (names are in the server log, not in the reply) |
 | `sessions_closed`, `connections_closed` | what was thrown out |
 | `invoker_dropped` | you were among them |
-| `unchanged` | nothing at all changed |
+| `users_md5` | MD5 of the users file now in force on the server (32 hex characters; `""` from a server that does not report it). The server logs it too. Compare it with the hash of the file you rolled out |
+| `unchanged` | nothing at all changed (the hash is not counted as a change) |
 
 If the file cannot be loaded you get `MaintenanceError`, nothing changes, and the old users stay in force. Calling it again is
 always safe. There is no authorization beyond being logged in yet, so any client can send it; it can only make the server

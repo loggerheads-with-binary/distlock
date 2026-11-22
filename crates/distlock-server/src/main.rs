@@ -29,7 +29,12 @@ async fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    info!(file = %cfg.users_file.display(), users = users.user_count(), "users loaded");
+    info!(
+        file = %cfg.users_file.display(),
+        users = users.user_count(),
+        users_md5 = %users.users_md5(),
+        "users loaded"
+    );
 
     let bind_addr = cfg.bind_addr;
     let tls = cfg.tls_enabled;

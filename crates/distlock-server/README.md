@@ -70,7 +70,8 @@ connection, and the client replies with a signature of `"distlock-auth-v2\0" || 
   "public_keys": [ { "key": "<32 bytes, base64>", "identifier": "laptop", "issuer": "ops", "expiry": "2026-12-31T00:00:00Z" } ] }
 ```
 * `key`: 43 characters of base64 (URL-safe or standard, padded or not). Make a pair with
-  `python -m distlock.keys` (`pip install "pydistlock[keys]"`); the private half never reaches the server.
+  `distlock-health keys generate` (or `python -m distlock.keys`, `pip install "pydistlock[keys]"`); the private
+  half never reaches the server.
 * `identifier` is written to the log (debug level) when the key logs someone in. `issuer` is metadata and
   is not read. `expiry` is an RFC 3339 time with an offset; after it the key stops logging in new sessions.
   Sessions that are already open stay open.
@@ -91,8 +92,11 @@ Without TLS a signature keeps the key safe, but the session token that follows i
   never expose the port on an untrusted network. See [TLS](#tls) (`DISTLOCK_TLS_ENABLED=true`).
 * **State is in memory.** After a restart the server refuses lock requests for `DISTLOCK_STARTUP_GRACE_MS`,
   so that leases from the old process run out. Keep it at or above `DISTLOCK_MAX_TTL_MS`.
-* Edit the users file and send a `reset_users` maintenance command (from the Python or Rust client) to
-  reload it without a restart. Removed or disabled users are disconnected and lose their locks.
+* Edit the users file and run `distlock-health reset-users` (or `reset_users` from the Python or Rust
+  client) to reload it without a restart. Removed or disabled users are disconnected and lose their
+  locks. The server keeps the MD5 of the file in force in memory, logs it (`users_md5=...`) at start-up and
+  on every reset, and returns it from the reset and from `distlock-health check`, so you can confirm that
+  every server runs the file you rolled out. It is a change detector, not a security measure.
 
 ## Clients
 
@@ -120,7 +124,25 @@ not asked for certificates: they still log in with their password.
 
 The **private key is not optional**. The certificate is public; the key is how the server proves in every
 handshake that the certificate is its own. A passphrase on the key is what the server cannot handle: it
-has nobody to ask at start-up, so the key file must be unencrypted (the scripts below take care of that).
+has nobody to ask at start-up, so the key file must be unencrypted (the tools below take care of that).
+
+### Make the certificates with `distlock-health` (no `openssl` needed)
+
+`distlock-health tls` (installed with the client, see the
+[`distlock-client` README](https://github.com/loggerheads-with-binary/distlock/blob/main/crates/distlock-client/README.md#tls-certificates))
+makes the same files as the scripts below. Same defaults: it writes to `config/tls/` unless you pass
+`--dir`, and it overwrites nothing without `--force`.
+
+```bash
+distlock-health tls new-ca                                          # ca.crt (give to clients) and ca.key (keep secret)
+#   OR use a CA you already have:  distlock-health tls use-ca --cert /pki/ca.crt --key /pki/ca.key
+distlock-health tls server-cert --name locks.internal.example --ip 10.0.0.5
+DISTLOCK_TLS_ENABLED=true DISTLOCK_TLS_CERT_FILE=config/tls/server.crt \
+  DISTLOCK_TLS_KEY_FILE=config/tls/server.key distlock-server
+```
+
+Differences from the scripts: the tool cannot read a key that has a passphrase (remove it with
+`openssl pkey`), and has no `--encrypt-key` for the CA key.
 
 ### Make the certificates (scripts, need only `openssl`)
 
@@ -176,7 +198,7 @@ DistLockClient.from_url(url, tls=True, ca_file_content=os.environ["DISTLOCK_CA_P
 DistLockClient { tls: true, ca_file_path: Some("/etc/distlock/ca.crt".into()), ..DistLockClient::from_url(url)? }
 ```
 ```bash
-distlock-health --url distlock://probe:pw@10.0.0.5:7878 --tls --ca-file /etc/distlock/ca.crt
+distlock-health check --url distlock://probe:pw@10.0.0.5:7878 --tls --ca-file /etc/distlock/ca.crt
 ```
 
 | Client error | Cause |

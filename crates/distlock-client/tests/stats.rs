@@ -42,3 +42,27 @@ async fn stats_report_the_startup_grace_period() {
     assert!(s.in_startup_grace);
     assert!(s.startup_grace_remaining_ms > 50_000);
 }
+#[tokio::test]
+async fn stats_carry_the_md5_of_the_users_file_and_none_for_users_built_in_memory() {
+    let in_memory = TestServer::start().await;
+    let s = in_memory
+        .client("billing")
+        .connect()
+        .await
+        .unwrap()
+        .stats()
+        .await
+        .unwrap();
+    assert_eq!(s.users_md5, "", "no file, no hash");
+
+    let srv = FileServer::start(&["billing"]).await;
+    let c = srv.client("billing").connect().await.unwrap();
+    let before = c.stats().await.unwrap().users_md5;
+    assert_eq!(before.len(), 32, "{before}");
+    srv.write(&[("billing", true), ("reports", true)]);
+    assert_eq!(c.stats().await.unwrap().users_md5, before, "not read yet");
+    let report = c.maintenance().reset_users().await.unwrap();
+    let after = c.stats().await.unwrap().users_md5;
+    assert_ne!(after, before);
+    assert_eq!(report.users_md5, after, "the reset and the stats agree");
+}

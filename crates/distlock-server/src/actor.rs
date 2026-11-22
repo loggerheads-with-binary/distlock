@@ -496,6 +496,7 @@ impl Actor {
             startup_grace_remaining_ms: ms(grace),
             system: Some(system),
             process: Some(process),
+            users_md5: self.users.users_md5(),
         };
         self.reply(conn, seq, server_frame::Body::StatsOk(ok));
     }
@@ -648,9 +649,16 @@ impl Actor {
                 doomed.extend(sess.conns);
             }
         }
-        if !reload.unchanged {
+        if reload.unchanged {
             info!(
                 generation = reload.generation,
+                users_md5 = %reload.users_md5,
+                "users reset requested: the file is unchanged"
+            );
+        } else {
+            info!(
+                generation = reload.generation,
+                users_md5 = %reload.users_md5,
                 added = ?reload.added,
                 removed = ?reload.removed,
                 disabled = ?reload.disabled,
@@ -670,6 +678,7 @@ impl Actor {
             sessions_closed: count(victims.len()),
             connections_closed: count(doomed.len()),
             invoker_dropped,
+            users_md5: reload.users_md5.clone(),
         };
         // Reply first: the close below is queued behind it on the same connection.
         self.reply(

@@ -154,7 +154,10 @@ bcrypt uses only the first 72 bytes of a password. Use a random password of at m
 
 ## TLS
 
-`scripts/tls/` makes certificates for the server's TLS listener. Run any script with `--help` for its
+`scripts/tls/` makes certificates for the server's TLS listener. The `distlock-health tls` command does the
+same without `openssl` (`new-ca`, `use-ca`, `server-cert`, same defaults and options), so on a machine that has the
+binary you do not need these scripts. Keep using the scripts for a key or CA key that has a passphrase, which the
+binary does not read. Passphrase-free keys and certificates from either are interchangeable. Run any script with `--help` for its
 options. Each one writes to `config/tls` by default, relative to the directory you run it from.
 Pass `--dir` to choose another folder.
 

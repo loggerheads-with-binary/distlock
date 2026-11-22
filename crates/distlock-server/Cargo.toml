@@ -21,6 +21,7 @@ distlock-proto = { version = "0.4.0", path = "../distlock-proto" }
 dotenvy = "0.15.7"
 futures-util = { version = "0.3.34", features = ["sink"] }
 getrandom = "0.4.3"
+md-5 = "0.11.0"
 prost = "0.14.6"
 ring = "0.17"
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }

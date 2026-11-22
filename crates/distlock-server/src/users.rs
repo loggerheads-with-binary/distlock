@@ -128,8 +128,18 @@ struct Snapshot {
     dummy_cost: u32,
     /// The exact bytes this snapshot was parsed from, so reloading an unchanged file is a no-op.
     source_bytes: Option<Arc<[u8]>>,
+    /// MD5 of `source_bytes` as 32 lowercase hex characters; empty for users built in memory. Kept here
+    /// so reporting it never touches the disk, and so it always describes the users in force.
+    md5: Arc<str>,
     /// 1 for the first load, then +1 for every published reload.
     generation: u64,
+}
+
+/// MD5 of `bytes`, as 32 lowercase hex characters. Identifies a file version for operators; MD5 is
+/// not collision-resistant, so it must never be used to authenticate anything.
+fn md5_hex(bytes: &[u8]) -> Arc<str> {
+    use md5::{Digest, Md5};
+    hex(&Md5::digest(bytes)).into()
 }
 
 impl Snapshot {
@@ -150,6 +160,7 @@ impl Snapshot {
                     .into()
             }
         };
+        let md5: Arc<str> = source_bytes.as_deref().map_or_else(|| "".into(), md5_hex);
         Self {
             users: records
                 .into_iter()
@@ -167,6 +178,7 @@ impl Snapshot {
             dummy_hash,
             dummy_cost,
             source_bytes,
+            md5,
             generation: previous.map_or(1, |p| p.generation + 1),
         }
     }
@@ -231,6 +243,8 @@ impl Snapshot {
 pub struct Reload {
     /// Generation of the users now in force.
     pub generation: u64,
+    /// MD5 of the users file now in force (32 lowercase hex characters).
+    pub users_md5: String,
     /// The file was byte-for-byte the same as the one in force: nothing was swapped.
     pub unchanged: bool,
     pub added: Vec<String>,
@@ -255,6 +269,7 @@ impl Reload {
 fn diff(old: &Snapshot, new: &Snapshot) -> Reload {
     let mut r = Reload {
         generation: new.generation,
+        users_md5: new.md5.to_string(),
         ..Reload::default()
     };
     for (id, n) in &new.users {
@@ -377,6 +392,11 @@ impl UserDb {
         self.current.load().users.len()
     }
 
+    /// MD5 of the users file in force (32 lowercase hex characters), or empty if the users were built
+    /// in memory. Read from memory: it changes only when a load or a reload publishes new users.
+    pub fn users_md5(&self) -> String {
+        self.current.load().md5.to_string()
+    }
     /// Generation of the users in force: 1 after the first load, +1 per published reload.
     pub fn generation(&self) -> u64 {
         self.current.load().generation
@@ -429,6 +449,7 @@ impl UserDb {
         match outcome {
             None => Ok(Reload {
                 generation: old.generation,
+                users_md5: old.md5.to_string(),
                 unchanged: true,
                 ..Reload::default()
             }),
@@ -799,6 +820,67 @@ mod tests {
         assert_eq!(UserDb::load(&path, 1).unwrap().user_count(), 3);
         let missing = UserDb::load(&dir.path().join("nope.json"), 1).unwrap_err();
         assert!(matches!(missing, UsersError::Io { .. }), "{missing}");
+    }
+
+    // ------------------------------------------------------------------ the users file hash
+
+    #[test]
+    fn md5_matches_the_rfc_1321_test_vectors() {
+        assert_eq!(&*md5_hex(b""), "d41d8cd98f00b204e9800998ecf8427e");
+        assert_eq!(&*md5_hex(b"abc"), "900150983cd24fb0d6963f7d28e17f72");
+        assert_eq!(
+            &*md5_hex(
+                b"12345678901234567890123456789012345678901234567890123456789012345678901234567890"
+            ),
+            "57edf4a22be3c955ac49da2e2107b67a"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_hash_follows_the_file_in_force_and_only_that() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("users.json");
+        write_users(&path, &[("a", "pw-a", true)]);
+        let db = UserDb::load(&path, 4).unwrap();
+        let first = db.users_md5();
+        assert_eq!(first, &*md5_hex(&std::fs::read(&path).unwrap()));
+        assert_eq!(first.len(), 32);
+        assert!(
+            first
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        );
+
+        // The same bytes: nothing is swapped and the hash is the same.
+        let r = db.reload().await.unwrap();
+        assert!(r.unchanged);
+        assert_eq!(
+            (r.users_md5.as_str(), db.users_md5().as_str()),
+            (first.as_str(), first.as_str())
+        );
+
+        // New content: the hash changes only once the reload has published it.
+        write_users(&path, &[("a", "pw-a", true), ("b", "pw-b", true)]);
+        assert_eq!(
+            db.users_md5(),
+            first,
+            "the file on disk is not in force yet"
+        );
+        let r = db.reload().await.unwrap();
+        let second = db.users_md5();
+        assert_ne!(second, first);
+        assert_eq!(r.users_md5, second);
+        assert_eq!(second, &*md5_hex(&std::fs::read(&path).unwrap()));
+
+        // A file that is refused leaves the hash of the users that stay in force.
+        std::fs::write(&path, "{ not json").unwrap();
+        db.reload().await.unwrap_err();
+        assert_eq!(db.users_md5(), second);
+    }
+
+    #[test]
+    fn users_built_in_memory_have_no_hash() {
+        assert_eq!(UserDb::for_tests(&[("a", "pw", true)]).users_md5(), "");
     }
 
     // ------------------------------------------------------------------ reloading

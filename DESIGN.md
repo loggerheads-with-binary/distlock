@@ -256,7 +256,8 @@ means N actors keyed by `hash(name)`, which is also the unit that would map to n
   asked for certificates. A plaintext client is dropped by a TLS server, and the reverse also fails. The certificate
   scripts live in `scripts/tls/`.
 * **Stats** (`Stats` request, answered by the engine in `actor.rs`): version, uptime, connections, sessions, connected
-  clients, locks held, requests queued, lock names, event names, and startup grace. It also returns system and process
+  clients, locks held, requests queued, lock names, event names, startup grace, and the MD5 of the users file in force
+  (`users_md5`). It also returns system and process
   CPU, memory and file usage, sampled over a window of about 200 ms (`stats.rs`). Optional fields are absent when the
   platform cannot report them. `events` counts event names with waiters or a live publication, not individual waiters.
 
@@ -369,13 +370,33 @@ Related client behaviour:
 * `min_version` (default `0.3.0`) makes the client refuse a server older than that. The check runs after login and fails with
   `ServerTooOld`.
 
-### Health check (`distlock-health`)
+### Operator tool (`distlock-health`)
 
-`distlock-health` (in the `distlock-client` crate) logs in afresh for each check and reports the server's memory, CPU,
-open files, load, connected clients, locks held and startup-grace state as JSON. Exit codes: `0` healthy, `1` failed,
-`3` in startup grace (with `--require-ready`). `--interval N` repeats the check. Each report is POSTed to the OK or the error
-webhook (`--ok-webhook` / `--error-webhook`, or `DISTLOCK_OK_WEBHOOK` / `DISTLOCK_ERROR_WEBHOOK`). Its client options include
-`--tls` and `--ca-file`. The same figures are available from the Python `client.stats()`.
+`distlock-health` (in the `distlock-client` crate, behind the default `cli` feature) is one binary with explicit
+subcommands, parsed with `clap`. Run with none, or with old-style flags and no subcommand, it prints the command
+list and exits 2: nothing happens implicitly. The server URL is required by the commands that need one (`--url`,
+`--url -` for one line on stdin, or `$DISTLOCK_URL`); it is no longer read from a pipe unless asked for.
+
+| Command | Does |
+|---|---|
+| `check` | Logs in afresh and reports the server's memory, CPU, open files, load, connected clients, locks held, startup-grace state and `users_md5`, as `key: value` lines. `--interval N` repeats it forever. Each report is POSTed as JSON to the OK or the error webhook (`--ok-webhook` / `--error-webhook`, or `DISTLOCK_OK_WEBHOOK` / `DISTLOCK_ERROR_WEBHOOK`; an empty variable means none). `--human-readable` prints sizes as `16.4 GiB`, percentages as `24.3%` and integers as `92_160` in the text only; webhook JSON keeps plain numbers. |
+| `reset-users` | Sends `Maintenance{ResetUsers}` and prints the counts and the `users_md5` now in force. |
+| `tls new-ca`, `tls use-ca`, `tls server-cert` | The certificates for the server's TLS listener, with `rcgen` and `x509-parser` instead of `openssl`. |
+| `keys generate` | An Ed25519 key pair for `auth_mode=2`, with `ring`. |
+
+Exit codes: `0` success, `1` the action failed, `2` bad usage, `3` (`check --require-ready`) the server is in its startup
+grace period. The connection flags (`--tls`, `--ca-file`, `--no-verify-ca`, `--no-verify-host`, `--timeout`) are shared by
+`check` and `reset-users`. The same figures are available from the Python `client.stats()`.
+
+**TLS tooling.** Keys are ECDSA P-256 in PKCS#8 PEM, which the server reads. `new-ca` writes a self-signed CA
+(`basicConstraints CA:TRUE`, `keyCertSign`); `server-cert` signs a leaf with `serverAuth`, the requested DNS and IP
+names in the subjectAltName, a random 16-byte serial, and validity starting five minutes ago so a slightly slow client
+clock does not see it as "not yet valid". `use-ca` accepts an existing CA only if it is a CA, has not expired, and its
+key (when given) matches the certificate. An intermediate CA's certificate is appended after the leaf. With a CA
+certificate but no CA key, `server-cert` writes a CSR instead. Files are created owner-only for keys, and nothing is
+replaced without `--force`. Keys with a passphrase are refused (the tool cannot ask for one, nor can the server); the
+shell scripts in `scripts/tls/` still handle them. This tool adds about 1 MB to the release binary (clap, rcgen,
+x509-parser), measured at 3.5 MB to 4.4 MB stripped on macOS arm64.
 
 ## Reloading the users
 
@@ -387,7 +408,8 @@ pointer swap, so readers pay nothing for it. The only lock is a mutex that order
 no reader touches it. A reload that fails (unreadable or invalid file) publishes nothing, so the previous users
 stay in force and checks keep working. Re-reading an unchanged file is one file read, no hashing, no swap.
 
-Triggered by **`client.maintenance.reset_users()`** (Rust: `client.maintenance().reset_users()`), wire message
+Triggered by **`client.maintenance.reset_users()`** (Rust: `client.maintenance().reset_users()`, CLI:
+`distlock-health reset-users`), wire message
 `Maintenance{ResetUsers}`. The connection task that received it does the reload (never the lock engine, so a slow
 reload cannot stall anyone's locks) and hands the diff to the engine:
 
@@ -406,6 +428,16 @@ Two races are closed in the engine, which re-checks the lock-free snapshot whene
 a login whose password was verified just before a swap is refused if the user is gone by the time the engine sees it,
 and a session whose user lost access cannot be joined. (Both have deterministic unit tests that drive the engine
 directly, since a socket cannot hit the window reliably.)
+
+**The users file hash.** The snapshot also holds the MD5 of the bytes it was parsed from (`users_md5`, 32 lowercase hex
+characters; empty for users built in memory). It is computed once when a snapshot is built, so reporting it reads no
+disk, and it always describes the users in force: a reload that fails publishes nothing, and the hash stays. The server
+logs it at start-up (`users loaded`) and on every reset (`users reset requested`, or `users reloaded` when something
+changed). It is returned in `ResetUsersOk.users_md5` and `StatsOk.users_md5`, so `distlock-health reset-users` and
+`check` (and the Python `report.users_md5` / `stats.users_md5`) can show it. Its purpose is to confirm that every
+server runs the file that was rolled out. MD5 is only a change detector here: it is not collision-resistant and
+authenticates nothing. A server older than this field returns an empty string. There is one server in v1; across
+several, each server's file is its own, so compare each server's hash with the hash of the file you put there.
 
 **Authorization.** There is no per-user permission yet, so *any logged-in client may send this command*. That is
 bounded on purpose: the command only makes the server re-read a file an administrator controls (a client cannot
@@ -449,7 +481,7 @@ unmodified gives nobody a way in. Hand each client team its own random password
 * `enabled: false` rejects new logins without deleting the entry. Unknown fields are rejected, except
   the human-only `$schema` and `description`.
 * An unreadable or invalid file is a startup error. A group/world-readable file should at least warn.
-* Reload with `client.maintenance.reset_users()` (see *Reloading the users*): removing or disabling a client terminates its
+* Reload with `client.maintenance.reset_users()` or `distlock-health reset-users` (see *Reloading the users*): removing or disabling a client terminates its
   live sessions. Nothing is re-read until a reload is requested.
 
 **Event and auth variables.** `DISTLOCK_EVENT_DEFAULT_PUBLISH_MS` (10 s), `DISTLOCK_EVENT_MAX_PUBLISH_MS` (600 s; the default
@@ -492,7 +524,7 @@ library's examples and CLI; those belong in the client application's environment
 * Client tests (`crates/distlock-client/tests`): the real server in-process, plus a TCP proxy that can be cut or paused to
   prove reconnect and reclaim: locks surviving a dropped connection, a grant made while disconnected, a lease that expired
   while away, a server restart; plus cancellation, drop-releases, contention, namespaces/families, statuses, blocking API.
-* Python tests (`python/tests`, 141 collected): URL parsing and validation (no server), then the whole API against the real
+* Python tests (`python/tests`, 142 collected): URL parsing and validation (no server), then the whole API against the real
   `distlock-server` binary through async and blocking calls, including cancellation, Ctrl-C, lost leases and a server
   restart. CI runs them on Python 3.11 and 3.13 (macOS and Linux). `test_resilience.py` proves leases keep renewing while the
   event loop is blocked, while Python spins holding the GIL, and after the client object is garbage-collected (a rival thread
@@ -535,6 +567,11 @@ library's examples and CLI; those belong in the client application's environment
   held until their leases expire. Clients must read continuously and `Attach` again on loss.
 * `users.json` is re-read only when a client sends `ResetUsers` (there is no file watcher and no `SIGHUP` trigger yet).
 * `ResetUsers` has no authorization beyond being logged in (see *Reloading the users*).
+* `users_md5` is MD5 of the file's bytes, so a change that only reformats the file (whitespace, key order) changes the hash
+  and counts as a reload even though no user changed. It detects change, not meaning, and is not a security measure.
+* `distlock-health tls` cannot read or write passphrase-protected keys, and does not make a CA key with a passphrase
+  (`new-ca.sh --encrypt-key`). `scripts/tls/` still does. Windows is built in CI but the owner-only key file mode is
+  applied only on Unix; on Windows the key file gets the folder's default permissions.
 * A changed password does not end live sessions; to cut a leaked credential off completely, remove or disable the user.
 * The client renews each lease from its own task, one RPC per lock per renewal. `Extend` is batched on the wire, but the
   client does not batch yet; thousands of simultaneously held locks would be better served by one renewer per client.

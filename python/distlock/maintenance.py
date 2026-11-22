@@ -26,6 +26,9 @@ class ResetUsersReport:
     #: The caller itself was among the users thrown out. The report still reached it; its connection
     #: closed right after, and so did the rest of its pool.
     invoker_dropped: bool
+    #: MD5 of the users file now in force on the server: 32 lowercase hex characters, or ``""`` if the
+    #: server does not report it. Compare it with the hash of the file you meant to deploy.
+    users_md5: str = ""
 
     @property
     def unchanged(self) -> bool:

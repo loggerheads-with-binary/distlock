@@ -10,7 +10,7 @@ use distlock_proto::v1 as pb;
 
 /// What a [`Maintenance::reset_users`] did. Counts only: the names are in the server's log, so this
 /// call cannot be used to enumerate other applications.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResetUsersReport {
     pub added: u32,
     pub removed: u32,
@@ -25,12 +25,18 @@ pub struct ResetUsersReport {
     /// The sender itself was among the users thrown out. This reply was sent first; its connection
     /// closes right after, and so does every other connection of its pool.
     pub invoker_dropped: bool,
+    /// MD5 of the users file now in force on the server (32 lowercase hex characters; empty if the
+    /// server does not report it). Compare it with the hash of the file you meant to deploy.
+    pub users_md5: String,
 }
 
 impl ResetUsersReport {
-    /// Nothing changed at all (the file was the same as the one already in force).
+    /// Nothing changed at all: no user was added, removed or changed. The hash is not a change.
     pub fn is_noop(&self) -> bool {
-        *self == Self::default()
+        Self {
+            users_md5: String::new(),
+            ..self.clone()
+        } == Self::default()
     }
 }
 
@@ -45,6 +51,7 @@ impl From<pb::ResetUsersOk> for ResetUsersReport {
             sessions_closed: r.sessions_closed,
             connections_closed: r.connections_closed,
             invoker_dropped: r.invoker_dropped,
+            users_md5: r.users_md5,
         }
     }
 }

@@ -103,13 +103,17 @@ lock.release_with(Some(State::Succeeded), None).await?;
 ```
 
 ## Health check and monitoring
-`distlock-health` logs in and prints the server's memory, CPU, open files, load, connected clients, locks
-held and startup-grace state. It can run on a timer and POST the result to a webhook.
+`distlock-health` is the operator's tool, with an explicit subcommand for every action (run on its own it
+prints the list and exits 2). `check` logs in and prints the server's memory, CPU, open files, load,
+connected clients, locks held, startup-grace state and the MD5 of the users file in force. It can run on
+a timer and POST the result to a webhook. The same binary re-reads the users file (`reset-users`), makes
+TLS certificates (`tls ...`) and Ed25519 login keys (`keys generate`).
 ```bash
 # install it as described in Install above
 export DISTLOCK_URL='distlock://billing:s3cret@127.0.0.1:7878'
-distlock-health                                  # one check; exit 0 healthy, 1 failed, 3 in startup grace (--require-ready)
-distlock-health --interval 30 \
+distlock-health check                            # one check; exit 0 healthy, 1 failed, 3 in startup grace (--require-ready)
+distlock-health check --human-readable           # 16.4 GiB, 24.3%, 92_160
+distlock-health check --interval 30 \
   --ok-webhook https://hooks.example.com/up \
   --error-webhook https://hooks.example.com/down  # or $DISTLOCK_OK_WEBHOOK / $DISTLOCK_ERROR_WEBHOOK
 ```
@@ -117,9 +121,21 @@ Every check logs in afresh and POSTs a JSON report to the OK or the error webhoo
 JSON format and exit codes are in the [`distlock-client` README](crates/distlock-client/README.md#distlock-health).
 From Python, `await client.stats()` (or `client.stats_sync()`) returns the same figures.
 
+**Changing users without a restart.** Edit `users.json`, then run `distlock-health reset-users`. It prints what
+changed and the MD5 of the file now in force, which the server also writes to its log. Compare it with
+`md5sum users.json`, or look for it in `distlock-health check`, to confirm every server runs the file you
+rolled out. Removing or disabling a user ends that user's sessions.
+
 ## TLS with your own certificate and CA
 TLS is off until you set `DISTLOCK_TLS_ENABLED=true`. The server then needs a certificate and key and
-refuses to start without a valid pair. The scripts in [`scripts/tls/`](scripts/tls) make them (they need only `openssl`):
+refuses to start without a valid pair. `distlock-health tls` makes them with no other tool; the scripts in
+[`scripts/tls/`](scripts/tls) do the same with `openssl`. With the binary:
+```bash
+distlock-health tls new-ca                                              # config/tls/ca.crt (for clients) + ca.key (keep secret)
+#   OR use a CA you have:  distlock-health tls use-ca --cert /pki/ca.crt --key /pki/ca.key
+distlock-health tls server-cert --name locks.internal.example --ip 10.0.0.5     # server.crt + server.key
+```
+With the scripts:
 ```bash
 scripts/tls/new-ca.sh                      # a private CA: config/tls/ca.crt (for clients) + ca.key (keep secret)
 #   OR use a CA you have:  scripts/tls/use-ca.sh --cert /pki/ca.crt --key /pki/ca.key
@@ -145,8 +161,8 @@ Without TLS, a password crosses the network in the clear. **Auth mode 2** sends 
 sends a random nonce, and the client answers with an Ed25519 signature of it. Nothing a sniffer sees can be
 replayed, because every connection gets a new nonce.
 ```bash
-pip install "pydistlock[keys]"
-python -m distlock.keys --client-id billing --identifier laptop     # prints a private key and a public key
+distlock-health keys generate --client-id billing --identifier laptop   # prints a private key and a public key
+#   or, with Python:  pip install "pydistlock[keys]"  and  python -m distlock.keys --client-id billing --identifier laptop
 ```
 Put the **public** key in the user's entry in `users.json` (a user may have a password hash, keys, or both;
 `identifier` is logged when the key is used, `expiry` is optional):

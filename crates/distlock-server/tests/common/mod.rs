@@ -125,6 +125,19 @@ impl FileServer {
         }
     }
 
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    /// MD5 of the file as it is on disk now, as 32 lowercase hex characters.
+    pub fn md5(&self) -> String {
+        use md5::{Digest, Md5};
+        Md5::digest(std::fs::read(&self.path).unwrap())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
     /// Replace the file's contents: `(client_id, enabled)`, password `pw-<client_id>`.
     pub fn write(&self, users: &[(&str, bool)]) {
         write_users(&self.path, users);

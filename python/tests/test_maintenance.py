@@ -161,3 +161,32 @@ def test_a_changed_password_only_affects_new_logins(make_server, name):
         DistLockClient.from_url(srv.url("billing")).connect_sync()  # old password
     DistLockClient.from_url(srv.url("billing", password="rotated")).connect_sync()
     guard.release_sync()
+
+
+def _md5(path) -> str:
+    import hashlib
+
+    return hashlib.md5(path.read_bytes()).hexdigest()
+
+
+def test_reset_and_stats_report_the_md5_of_the_users_file_in_force(make_server):
+    srv = make_server(users=BOTH)
+    client = srv.client("reports")
+    first = _md5(srv.users_file)
+    assert client.stats_sync().users_md5 == first
+    # The file changes on disk, but the server keeps what it loaded until it is asked to reload.
+    srv.write_users({**BOTH, "newcomer": True})
+    second = _md5(srv.users_file)
+    assert second != first
+    assert client.stats_sync().users_md5 == first
+    report = client.maintenance.reset_users_sync()
+    assert report.users_md5 == second and report.added == 1
+    assert client.stats_sync().users_md5 == second
+    # An unchanged file is still reported, and is still "unchanged".
+    report = client.maintenance.reset_users_sync()
+    assert report.unchanged and report.users_md5 == second
+    # A file the server cannot load changes nothing, hash included.
+    srv.write_raw("{ not json")
+    with pytest.raises(MaintenanceError):
+        client.maintenance.reset_users_sync()
+    assert client.stats_sync().users_md5 == second

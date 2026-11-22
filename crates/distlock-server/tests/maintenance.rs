@@ -256,3 +256,32 @@ async fn an_empty_maintenance_command_is_rejected_politely() {
     expect_error_code(body, ErrorCode::InvalidArgument);
     expect_granted(a.acquire(1, "m", Mode::Mutex, 5_000, 0).await); // connection still fine
 }
+
+#[tokio::test]
+async fn the_reply_carries_the_md5_of_the_file_in_force() {
+    let srv = FileServer::start(&["billing"]).await;
+    let (mut a, _) = Client::login(srv.addr, "billing").await;
+    let first = srv.md5();
+    assert_eq!(first.len(), 32);
+    // An unchanged file: nothing changes, and the hash is the one the server started with.
+    assert_eq!(expect_reset(a.reset_users().await).users_md5, first);
+    // The file changes on disk; the hash only follows once the server has read it.
+    srv.write(&[("billing", true), ("newcomer", true)]);
+    let second = srv.md5();
+    assert_ne!(first, second);
+    assert_eq!(expect_reset(a.reset_users().await).users_md5, second);
+    // A file that cannot be loaded changes nothing, and the next reply still says what is in force.
+    std::fs::write(srv.path(), "{ not json").unwrap();
+    assert!(matches!(a.reset_users().await, sf::Body::Error(_)));
+    std::fs::write(
+        srv.path(),
+        serde_json::to_vec(&serde_json::json!({"version": 1, "users": []})).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        matches!(a.reset_users().await, sf::Body::Error(_)),
+        "an empty list is invalid too"
+    );
+    srv.write(&[("billing", true), ("newcomer", true)]);
+    assert_eq!(expect_reset(a.reset_users().await).users_md5, second);
+}
