@@ -22,6 +22,18 @@ async def settle(seconds: float = 0.25) -> None:
     await asyncio.sleep(seconds)
 
 
+async def registered(client, names: int, baseline: int, timeout: float = 10) -> None:
+    """Wait until ``names`` new event names have waiters on the server (``stats().events`` rose by that much).
+
+    shortcut: the server counts event names, not waiters, so this proves one waiter per name; use
+    it only where each name has a single waiter. Needs ``baseline`` read before the waiters start.
+    """
+    deadline = time.monotonic() + timeout
+    while (await client.stats()).events < baseline + names:
+        assert time.monotonic() < deadline, "waiters never registered on the server"
+        await asyncio.sleep(0.02)
+
+
 # ------------------------------------------------------------------------------ the basics
 
 
@@ -65,9 +77,10 @@ def test_Event_with_a_capital_letter_is_the_same_factory(server, name):
 def test_only_waiters_of_that_name_and_namespace_are_woken(server, name):
     async def main():
         client = server.client()
+        baseline = (await client.stats()).events
         a = asyncio.create_task(client.Event(name, namespace="one").wait(timeout=5))
         b = asyncio.create_task(client.Event(name, namespace="two").wait(timeout=0.8))
-        await settle()
+        await registered(client, 2, baseline)
         assert await client.Event(name, namespace="one").set("x", publish_for=0) == 1
         assert await a == "x"
         with pytest.raises(LockTimeout):
