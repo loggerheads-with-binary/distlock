@@ -81,9 +81,11 @@ The manual steps below are the same thing done by hand, and the fallback if the 
 
 ### 0. Prepare
 
-1. Bump the version in **all** of: `[workspace.package]` in `Cargo.toml`, `python/Cargo.toml`,
-   `python/pyproject.toml`, and the `version = "..."` on the inter-crate dependencies
-   (`distlock-proto`, `distlock-core` in the crates that use them).
+1. Bump the version everywhere with `scripts/set-versions.sh --version X.Y.Z`. It updates `[workspace.package]`,
+   `python/Cargo.toml`, `python/pyproject.toml`, the inter-crate `version = "..."` pins, the client's
+   `EXPECTED_SERVER_VERSION`, and refreshes `Cargo.lock`. Use `--server`, `--client`, `--python` or `--expected` to set one
+   of them differently, and `--dry-run` to preview. `scripts/check-versions.sh` lists any package that differs from
+   the top-level `Cargo.toml` in red. All version scripts are documented in [`scripts/README.md`](scripts/README.md).
 2. Run the full build and test section above, plus the docs check:
    `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`
 3. Check them with `scripts/check-version.sh v0.3.0`, commit, merge to main, then tag: `git tag v0.3.0`.
