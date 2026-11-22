@@ -62,20 +62,60 @@ struct FileFormat {
 #[serde(deny_unknown_fields)]
 struct Entry {
     client_id: String,
-    password_hash: String,
+    /// bcrypt hash, for auth mode 1. Optional when the user has `public_keys`.
+    password_hash: Option<String>,
+    /// Ed25519 public keys, for auth mode 2.
+    #[serde(default)]
+    public_keys: Vec<KeyEntry>,
     #[serde(default = "default_true")]
     enabled: bool,
     description: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KeyEntry {
+    /// The 32-byte public key, base64 (standard or URL-safe, padded or not).
+    key: String,
+    /// A name for people ("laptop", "ci-2025"). Written to the server log when the key is used.
+    identifier: Option<String>,
+    /// Who vouched for the key. Metadata only, never read by the server.
+    issuer: Option<String>,
+    /// RFC 3339 timestamp with an offset, e.g. `2026-01-31T00:00:00Z`. From this moment on the key
+    /// no longer logs anyone in. Sessions already open are not affected.
+    expiry: Option<String>,
 }
 
 fn default_true() -> bool {
     true
 }
 
+/// One Ed25519 public key of a user.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PublicKey {
+    key: [u8; 32],
+    identifier: Option<Arc<str>>,
+    issuer: Option<Arc<str>>,
+    /// Unix seconds.
+    expires_at: Option<i64>,
+}
 #[derive(Debug)]
 struct Record {
-    hash: Arc<str>,
+    /// `None`: the user logs in by key only.
+    hash: Option<Arc<str>>,
+    keys: Vec<PublicKey>,
     enabled: bool,
+}
+/// What `Snapshot::build` is made of.
+struct NewRecord {
+    id: String,
+    hash: Option<String>,
+    keys: Vec<PublicKey>,
+    enabled: bool,
+}
+/// Which of a user's keys signed a login.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyMatch {
+    pub identifier: Option<String>,
 }
 
 /// One immutable, internally consistent view of the users. Never modified after it is published.
@@ -96,7 +136,7 @@ impl Snapshot {
     /// `previous` lets the dummy hash be reused when its cost is unchanged (hashing is the slow
     /// part of building a snapshot).
     fn build(
-        records: Vec<(String, String, bool)>,
+        records: Vec<NewRecord>,
         dummy_cost: u32,
         previous: Option<&Snapshot>,
         source_bytes: Option<Arc<[u8]>>,
@@ -113,12 +153,13 @@ impl Snapshot {
         Self {
             users: records
                 .into_iter()
-                .map(|(id, hash, enabled)| {
+                .map(|r| {
                     (
-                        id,
+                        r.id,
                         Record {
-                            hash: hash.into(),
-                            enabled,
+                            hash: r.hash.map(Into::into),
+                            keys: r.keys,
+                            enabled: r.enabled,
                         },
                     )
                 })
@@ -150,21 +191,35 @@ impl Snapshot {
             if !seen.insert(entry.client_id.clone()) {
                 return invalid(format!("duplicate client_id `{}`", entry.client_id));
             }
-            let Some(cost) = bcrypt_cost(&entry.password_hash) else {
+            if entry.password_hash.is_none() && entry.public_keys.is_empty() {
                 return invalid(format!(
-                    "`{}`: password_hash is not a bcrypt hash of cost {MIN_COST} or more \
-                     (create one with scripts/hash-password.sh)",
+                    "`{}`: needs a password_hash, public_keys, or both",
                     entry.client_id
                 ));
-            };
+            }
+            if let Some(hash) = &entry.password_hash {
+                let Some(cost) = bcrypt_cost(hash) else {
+                    return invalid(format!(
+                        "`{}`: password_hash is not a bcrypt hash of cost {MIN_COST} or more \
+                         (create one with scripts/hash-password.sh)",
+                        entry.client_id
+                    ));
+                };
+                dummy_cost = dummy_cost.max(cost);
+            }
             if entry.description.as_ref().is_some_and(|d| d.len() > 500) {
                 return invalid(format!(
                     "`{}`: description is longer than 500 bytes",
                     entry.client_id
                 ));
             }
-            dummy_cost = dummy_cost.max(cost);
-            records.push((entry.client_id, entry.password_hash, entry.enabled));
+            let keys = parse_keys(&entry.client_id, entry.public_keys)?;
+            records.push(NewRecord {
+                id: entry.client_id,
+                hash: entry.password_hash,
+                keys,
+                enabled: entry.enabled,
+            });
         }
         Ok(Self::build(records, dummy_cost, previous, source_bytes))
     }
@@ -185,6 +240,7 @@ pub struct Reload {
     pub disabled: Vec<String>,
     /// Newly `enabled: true`.
     pub enabled: Vec<String>,
+    /// The password hash or the set of public keys changed.
     pub password_changed: Vec<String>,
 }
 
@@ -211,7 +267,7 @@ fn diff(old: &Snapshot, new: &Snapshot) -> Reload {
                 if !o.enabled && n.enabled {
                     r.enabled.push(id.clone());
                 }
-                if o.hash != n.hash {
+                if o.hash != n.hash || o.keys != n.keys {
                     r.password_changed.push(id.clone());
                 }
             }
@@ -286,17 +342,37 @@ impl UserDb {
     pub fn for_tests(users: &[(&str, &str, bool)]) -> Self {
         let records = users
             .iter()
-            .map(|(id, pw, enabled)| {
-                (
-                    (*id).to_owned(),
-                    bcrypt::hash(pw, 4).expect("hash"),
-                    *enabled,
-                )
+            .map(|(id, pw, enabled)| NewRecord {
+                id: (*id).to_owned(),
+                hash: Some(bcrypt::hash(pw, 4).expect("hash")),
+                keys: Vec::new(),
+                enabled: *enabled,
             })
             .collect();
         Self::new(Snapshot::build(records, 4, None, None), None, 4)
     }
-
+    /// In-memory users that log in by key only, with no expiry: `(client_id, public keys, enabled)`.
+    #[doc(hidden)]
+    pub fn for_tests_with_keys(users: &[(&str, &[[u8; 32]], bool)]) -> Self {
+        let records = users
+            .iter()
+            .map(|(id, keys, enabled)| NewRecord {
+                id: (*id).to_owned(),
+                hash: None,
+                keys: keys
+                    .iter()
+                    .map(|key| PublicKey {
+                        key: *key,
+                        identifier: None,
+                        issuer: None,
+                        expires_at: None,
+                    })
+                    .collect(),
+                enabled: *enabled,
+            })
+            .collect();
+        Self::new(Snapshot::build(records, 4, None, None), None, 4)
+    }
     pub fn user_count(&self) -> usize {
         self.current.load().users.len()
     }
@@ -369,7 +445,12 @@ impl UserDb {
         // One snapshot for the whole check, so a reload in the middle cannot mix old and new.
         let snapshot = self.current.load_full();
         let (hash, real) = match snapshot.users.get(client_id) {
-            Some(r) if r.enabled => (Arc::clone(&r.hash), true),
+            Some(Record {
+                hash: Some(hash),
+                enabled: true,
+                ..
+            }) => (Arc::clone(hash), true),
+            // Unknown, disabled, or a key-only user: the same work, and always a refusal.
             _ => (Arc::clone(&snapshot.dummy_hash), false),
         };
         let Ok(_permit) = self.limiter.acquire().await else {
@@ -382,6 +463,41 @@ impl UserDb {
                 .await
                 .unwrap_or(false);
         matched && real
+    }
+
+    /// Did this user sign `message` with one of their unexpired public keys? Returns which key.
+    /// An unknown, disabled or key-less user costs the same one verification (against a dummy key)
+    /// and returns `None`, so a refusal does not tell which part was wrong.
+    pub fn verify_key(
+        &self,
+        client_id: &str,
+        message: &[u8],
+        signature: &[u8],
+    ) -> Option<KeyMatch> {
+        use ring::signature::{ED25519, UnparsedPublicKey};
+        let snapshot = self.current.load();
+        let now = unix_now();
+        let live: Vec<&PublicKey> = match snapshot.users.get(client_id) {
+            Some(r) if r.enabled => r
+                .keys
+                .iter()
+                .filter(|k| k.expires_at.is_none_or(|e| e > now))
+                .collect(),
+            _ => Vec::new(),
+        };
+        if live.is_empty() {
+            let _ = UnparsedPublicKey::new(&ED25519, dummy_public_key()).verify(message, signature);
+            return None;
+        }
+        live.into_iter()
+            .find(|k| {
+                UnparsedPublicKey::new(&ED25519, &k.key)
+                    .verify(message, signature)
+                    .is_ok()
+            })
+            .map(|k| KeyMatch {
+                identifier: k.identifier.as_deref().map(str::to_owned),
+            })
     }
 }
 
@@ -414,6 +530,137 @@ fn bcrypt_cost(hash: &str) -> Option<u32> {
     }
     let cost = u32::from(b[4] - b'0') * 10 + u32::from(b[5] - b'0');
     (MIN_COST..=31).contains(&cost).then_some(cost)
+}
+
+fn parse_keys(client_id: &str, entries: Vec<KeyEntry>) -> Result<Vec<PublicKey>, UsersError> {
+    let mut keys: Vec<PublicKey> = Vec::with_capacity(entries.len());
+    for (n, e) in entries.into_iter().enumerate() {
+        let at = |what: &str| format!("`{client_id}`: public_keys[{n}]: {what}");
+        let Some(key) = distlock_proto::decode_key32(&e.key) else {
+            return invalid(at(
+                "`key` must be 32 bytes in base64 (43 characters without padding)",
+            ));
+        };
+        if keys.iter().any(|k| k.key == key) {
+            return invalid(at("the same key is listed twice"));
+        }
+        for (name, value) in [("identifier", &e.identifier), ("issuer", &e.issuer)] {
+            if value.as_ref().is_some_and(|v| v.len() > 200) {
+                return invalid(at(&format!("`{name}` is longer than 200 bytes")));
+            }
+        }
+        let expires_at = match &e.expiry {
+            None => None,
+            Some(text) => Some(parse_expiry(text).map_err(|m| {
+                UsersError::Invalid(at(&format!(
+                    "`expiry` {text:?}: {m} (use RFC 3339 with an offset, e.g. 2026-01-31T00:00:00Z)"
+                )))
+            })?),
+        };
+        keys.push(PublicKey {
+            key,
+            identifier: e.identifier.map(Into::into),
+            issuer: e.issuer.map(Into::into),
+            expires_at,
+        });
+    }
+    Ok(keys)
+}
+
+/// `YYYY-MM-DDTHH:MM:SS[.fraction](Z|+HH:MM|-HH:MM)` as Unix seconds. The offset is required, so a
+/// key never expires at a different moment depending on the server's time zone.
+fn parse_expiry(text: &str) -> Result<i64, String> {
+    let b = text.trim().as_bytes();
+    let num = |from: usize, len: usize| -> Option<i64> {
+        let part = b.get(from..from + len)?;
+        part.iter()
+            .all(u8::is_ascii_digit)
+            .then(|| part.iter().fold(0i64, |n, d| n * 10 + i64::from(d - b'0')))
+    };
+    let shape_ok = b.len() >= 20
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && matches!(b[10], b'T' | b't')
+        && b[13] == b':'
+        && b[16] == b':';
+    let (Some(y), Some(mo), Some(d), Some(h), Some(mi), Some(s)) = (
+        num(0, 4),
+        num(5, 2),
+        num(8, 2),
+        num(11, 2),
+        num(14, 2),
+        num(17, 2),
+    ) else {
+        return Err("not a timestamp".into());
+    };
+    if !shape_ok {
+        return Err("not a timestamp".into());
+    }
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let days_in_month = match mo {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return Err("month out of range".into()),
+    };
+    if !(1..=days_in_month).contains(&d) || h > 23 || mi > 59 || s > 60 {
+        return Err("date or time out of range".into());
+    }
+    // Skip an optional fraction of a second, then read the offset.
+    let mut i = 19;
+    if b.get(i) == Some(&b'.') {
+        i += 1;
+        let start = i;
+        while b.get(i).is_some_and(u8::is_ascii_digit) {
+            i += 1;
+        }
+        if i == start {
+            return Err("empty fraction".into());
+        }
+    }
+    let offset = match b.get(i) {
+        Some(b'Z' | b'z') if i + 1 == b.len() => 0,
+        Some(sign @ (b'+' | b'-')) if i + 6 == b.len() && b[i + 3] == b':' => {
+            let (Some(oh), Some(om)) = (num(i + 1, 2), num(i + 4, 2)) else {
+                return Err("bad offset".into());
+            };
+            if oh > 23 || om > 59 {
+                return Err("offset out of range".into());
+            }
+            let secs = oh * 3600 + om * 60;
+            if *sign == b'-' { -secs } else { secs }
+        }
+        _ => return Err("missing or bad time-zone offset".into()),
+    };
+    // Days since 1970-01-01 (Howard Hinnant's civil-date algorithm).
+    let y = if mo <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * ((mo + 9) % 12) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Ok(days * 86_400 + h * 3600 + mi * 60 + s - offset)
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
+
+/// A real, valid public key that signs nothing, verified against when the user (or key) does not
+/// exist, so those logins take as long as a wrong signature from a real key.
+fn dummy_public_key() -> &'static [u8] {
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+    static KEY: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| {
+        Ed25519KeyPair::from_seed_unchecked(&[7u8; 32])
+            .expect("a 32-byte seed is always valid")
+            .public_key()
+            .as_ref()
+            .to_vec()
+    })
 }
 
 #[cfg(unix)]
@@ -804,5 +1051,176 @@ mod tests {
             "only {checks} lock-free checks ran during a {reload_took:?} reload: readers were blocked"
         );
         assert!(db.verify("slow", "pw-slow").await);
+    }
+
+    // ---------------------------------------------------------------------------- public keys
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+
+    fn pair(n: u8) -> Ed25519KeyPair {
+        Ed25519KeyPair::from_seed_unchecked(&[n; 32]).unwrap()
+    }
+    fn b64(pair: &Ed25519KeyPair) -> String {
+        distlock_proto::encode_key(pair.public_key().as_ref())
+    }
+    fn sign(pair: &Ed25519KeyPair, id: &str) -> (Vec<u8>, Vec<u8>) {
+        let message = distlock_proto::auth_message(b"nonce", id);
+        let signature = pair.sign(&message).as_ref().to_vec();
+        (message, signature)
+    }
+
+    #[test]
+    fn expiry_timestamps_are_parsed_exactly() {
+        assert_eq!(parse_expiry("1970-01-01T00:00:00Z"), Ok(0));
+        assert_eq!(parse_expiry("2000-03-01T00:00:00Z"), Ok(951_868_800));
+        assert_eq!(parse_expiry("2024-02-29T12:00:00Z"), Ok(1_709_208_000)); // a leap day
+        assert_eq!(
+            parse_expiry("2026-01-31T00:00:00.250Z"),
+            parse_expiry("2026-01-31T00:00:00Z")
+        );
+        // The offset moves the instant: 02:00 at +02:00 is midnight UTC.
+        assert_eq!(
+            parse_expiry("2026-01-31T02:00:00+02:00"),
+            parse_expiry("2026-01-31T00:00:00Z")
+        );
+        assert_eq!(
+            parse_expiry("2026-01-30T19:00:00-05:00"),
+            parse_expiry("2026-01-31T00:00:00Z")
+        );
+        for bad in [
+            "2026-01-31",
+            "2026-01-31T00:00:00",
+            "2026-02-30T00:00:00Z",
+            "2025-02-29T00:00:00Z",
+            "2026-13-01T00:00:00Z",
+            "2026-01-31T24:00:00Z",
+            "2026-01-31T00:00:00+0200",
+            "2026-01-31T00:00:00.Z",
+            "tomorrow",
+            "",
+        ] {
+            assert!(parse_expiry(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_key_logs_in_its_user_and_only_that_user() {
+        let (a, b) = (pair(1), pair(2));
+        let db = UserDb::parse(
+            &file(json!([
+                { "client_id": "alice", "public_keys": [{ "key": b64(&a), "identifier": "laptop", "issuer": "ops" }] },
+                { "client_id": "bob", "public_keys": [{ "key": b64(&b) }] },
+            ])),
+            1,
+        )
+        .unwrap();
+        let (message, signature) = sign(&a, "alice");
+        assert_eq!(
+            db.verify_key("alice", &message, &signature),
+            Some(KeyMatch {
+                identifier: Some("laptop".into())
+            })
+        );
+        assert_eq!(
+            db.verify_key("bob", &message, &signature),
+            None,
+            "another user's key"
+        );
+        assert_eq!(db.verify_key("nobody", &message, &signature), None);
+        // A signature is for one message: a different nonce, or the same nonce for another user.
+        let other = distlock_proto::auth_message(b"other nonce", "alice");
+        assert_eq!(db.verify_key("alice", &other, &signature), None);
+        let (message_bob, _) = sign(&a, "bob");
+        assert_eq!(db.verify_key("alice", &message_bob, &signature), None);
+        assert_eq!(
+            db.verify_key("alice", &message, &signature[1..]),
+            None,
+            "truncated"
+        );
+    }
+
+    #[test]
+    fn expired_disabled_and_key_only_users_are_refused_the_right_way() {
+        let k = pair(3);
+        let db = UserDb::parse(
+            &file(json!([
+                { "client_id": "old", "public_keys": [{ "key": b64(&k), "expiry": "2001-01-01T00:00:00Z" }] },
+                { "client_id": "new", "public_keys": [{ "key": b64(&k), "expiry": "2999-01-01T00:00:00Z" }] },
+                { "client_id": "off", "enabled": false, "public_keys": [{ "key": b64(&k) }] },
+                { "client_id": "both", "password_hash": some_hash(), "public_keys": [{ "key": b64(&k) }] },
+            ])),
+            1,
+        )
+        .unwrap();
+        let ok = |id: &str| {
+            let (m, s) = sign(&k, id);
+            db.verify_key(id, &m, &s).is_some()
+        };
+        assert!(!ok("old"), "an expired key does not log in");
+        assert!(ok("new") && ok("both"));
+        assert!(!ok("off"), "a disabled user does not log in");
+        // A key-only user has no password to check, however it is spelled.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        assert!(!rt.block_on(db.verify("new", "")));
+    }
+
+    #[test]
+    fn bad_key_entries_are_rejected_with_a_pointer_to_the_entry() {
+        let k = b64(&pair(4));
+        for (users, fragment) in [
+            (
+                json!([{ "client_id": "a" }]),
+                "needs a password_hash, public_keys, or both",
+            ),
+            (
+                json!([{ "client_id": "a", "public_keys": [] }]),
+                "needs a password_hash",
+            ),
+            (
+                json!([{ "client_id": "a", "public_keys": [{ "key": "short" }] }]),
+                "public_keys[0]",
+            ),
+            (
+                json!([{ "client_id": "a", "public_keys": [{ "key": k }, { "key": k }] }]),
+                "listed twice",
+            ),
+            (
+                json!([{ "client_id": "a", "public_keys": [{ "key": k, "expiry": "soon" }] }]),
+                "expiry",
+            ),
+            (
+                json!([{ "client_id": "a", "public_keys": [{ "key": k, "color": "red" }] }]),
+                "color",
+            ),
+        ] {
+            let message = rejected(&file(users));
+            assert!(message.contains(fragment), "{fragment}: {message}");
+        }
+    }
+
+    #[tokio::test]
+    async fn changing_a_users_keys_counts_as_changing_their_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("users.json");
+        let write = |keys: Vec<String>| {
+            let keys: Vec<_> = keys.into_iter().map(|k| json!({ "key": k })).collect();
+            std::fs::write(
+                &path,
+                file(json!([{ "client_id": "a", "public_keys": keys }])),
+            )
+            .unwrap();
+        };
+        write(vec![b64(&pair(5))]);
+        let db = UserDb::load(&path, 1).unwrap();
+        write(vec![b64(&pair(5)), b64(&pair(6))]);
+        let report = db.reload().await.unwrap();
+        assert_eq!(report.password_changed, vec!["a".to_owned()]);
+        assert!(report.revoked().is_empty(), "live sessions stay");
+        let (m, s) = sign(&pair(6), "a");
+        assert!(
+            db.verify_key("a", &m, &s).is_some(),
+            "the new key works at once"
+        );
     }
 }

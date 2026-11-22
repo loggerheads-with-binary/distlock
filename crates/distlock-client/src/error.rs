@@ -49,6 +49,9 @@ pub enum Error {
     /// be loaded). Nothing was changed.
     #[error("maintenance command failed: {0}")]
     Maintenance(String),
+    /// The server logged us in, but it is older than the `min_version` this client asks for.
+    #[error("the server is too old: it reports {server}, this client needs at least {required}")]
+    ServerTooOld { server: String, required: String },
     #[error("protocol error: {0}")]
     Protocol(String),
     #[error("the client has been closed")]
@@ -73,6 +76,7 @@ impl Error {
             Error::Unavailable(_) => "unavailable",
             Error::Server { .. } => "server",
             Error::Maintenance(_) => "maintenance",
+            Error::ServerTooOld { .. } => "server_too_old",
             Error::Protocol(_) => "protocol",
             Error::Closed => "closed",
         }

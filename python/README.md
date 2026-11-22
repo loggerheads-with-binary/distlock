@@ -62,6 +62,8 @@ client = DistLockClient(client_id="billing", password="s3cret", host="10.0.0.5",
 | `/namespace` | prefix for every lock name (`namespace:...`), to keep applications apart | none |
 | `pool_size` | TCP connections (1–256); they all share one session | `4` |
 | `default_ttl` | lease length in seconds for locks that do not set `ttl` | `30` |
+| `auth_mode` | `1`: `password` is sent. `2` or `v2`: log in with an Ed25519 key, `password` holds the private key (see below) | `1` |
+| `min_version` | oldest server release accepted, checked right after logging in (`ServerTooOld`) | `0.3.0` |
 | `tls` | connect over TLS (the server needs a certificate; see the server README) | `false` |
 | `tls_verify_ca` | require the certificate to chain to a trusted CA | `true` |
 | `tls_verify_host` | require the certificate to name `host` (DNS name or IP) | `true` |
@@ -86,7 +88,7 @@ DistLockClient(client_id="billing", password="s3cret", host="10.0.0.5", tls=True
                ca_file_content=os.environ["DISTLOCK_CA_PEM"])    # no file needed
 ```
 
-`from_url` (and `from_env`) also take `tls`, `tls_verify_ca`, `tls_verify_host`, `ca_file_path` and
+`from_url` (and `from_env`) also take `auth_mode`, `min_version`, `tls`, `tls_verify_ca`, `tls_verify_host`, `ca_file_path` and
 `ca_file_content` as keyword arguments. **A given argument beats the same setting in the URL**, and giving
 `ca_file_path` drops a `ca_file_content` in the URL (and the other way round), so the URL can live in
 configuration and the CA in a secret:
@@ -99,6 +101,24 @@ In a URL, percent-encode a `ca_file_content` value (`urllib.parse.quote(pem)`). 
 be in the server certificate's `subjectAltName`. Making the CA and the server certificate (`scripts/tls/*.sh`) is covered in
 the [server README](https://github.com/loggerheads-with-binary/distlock/blob/main/crates/distlock-server/README.md#tls),
 with a table of error messages.
+
+### Logging in with a key
+
+`auth_mode=2` sends no password: the private key (the URL's password slot, 43 characters) signs a nonce the
+server sends, and the server checks it against the public key in `users.json`. Make a pair:
+```bash
+pip install "pydistlock[keys]"
+python -m distlock.keys --client-id billing --identifier laptop
+```
+```python
+from distlock import generate_keypair, public_key_for
+private, public = generate_keypair()          # 43 characters each; `public` goes into users.json
+client = DistLockClient.from_url(f"distlock://billing:{private}@10.0.0.5:7878?auth_mode=v2")
+```
+The private key is a secret: read it from the environment or a secret store, not from source or a command
+line. A wrong key, an unknown user and an expired key all raise `AuthenticationError`. A signature does not
+protect the session that follows, so use TLS too. The server side is in the
+[server README](https://github.com/loggerheads-with-binary/distlock/blob/main/crates/distlock-server/README.md#logins-passwords-and-keys).
 
 URLs are parsed with `urllib` and validated with pydantic ([`ClientSettings`](https://github.com/loggerheads-with-binary/distlock/blob/main/python/distlock/settings.py));
 mistakes raise `ConfigError` with a message that never contains the password.

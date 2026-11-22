@@ -140,8 +140,37 @@ no CA file. The private key is always required, but never a passphrase: the serv
 Renewal, an external CA, and a table of error messages are in the [server README](crates/distlock-server/README.md#tls);
 the client side is in the [Rust](crates/distlock-client/README.md#tls) and [Python](python/README.md) READMEs.
 
+## Logging in with a key instead of a password
+Without TLS, a password crosses the network in the clear. **Auth mode 2** sends no password: the server
+sends a random nonce, and the client answers with an Ed25519 signature of it. Nothing a sniffer sees can be
+replayed, because every connection gets a new nonce.
+```bash
+pip install "pydistlock[keys]"
+python -m distlock.keys --client-id billing --identifier laptop     # prints a private key and a public key
+```
+Put the **public** key in the user's entry in `users.json` (a user may have a password hash, keys, or both;
+`identifier` is logged when the key is used, `expiry` is optional):
+```json
+{ "client_id": "billing", "public_keys": [ { "key": "<43 characters>", "identifier": "laptop", "expiry": "2026-12-31T00:00:00Z" } ] }
+```
+Give the **private** key to the client as its password, with `auth_mode=v2`:
+```python
+DistLockClient.from_url("distlock://billing:<private key>@10.0.0.5:7878?auth_mode=v2")
+```
+To switch passwords off, start the server with `DISTLOCK_MIN_AUTH_MODE=2`. Two cautions: the private key is
+a secret, so read it from the environment or a secret store and not from source control or a shell history;
+and a signature does not protect what follows, because the session token and the lock traffic are still
+readable and a stolen token can be used. **Use TLS** (above) as well. The key is 43 characters of URL-safe
+base64, so it fits in a URL as it is. The standard alphabet, padded, is accepted too, but then `/`, `+` and `=` must be
+percent-encoded in a URL.
+
+`min_version` (a URL parameter or the `min_version` argument, default `0.3.0`) makes the client refuse a server
+older than that. It is checked right after logging in, and the connection fails with `ServerTooOld`.
+
 ## Things to know before you deploy
 
+* **Passwords are sent as they are.** Without TLS, anyone on the network path can read the password, the
+  session token and every lock name. Use TLS, and consider key logins (above).
 * **TLS is optional and off by default.** Without `DISTLOCK_TLS_ENABLED=true` the
   server speaks plaintext: bind it to a private interface and never expose it on an untrusted network.
   Clients choose how strictly to verify the certificate with two flags (`tls_verify_ca`, `tls_verify_host`);

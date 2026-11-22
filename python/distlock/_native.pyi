@@ -51,6 +51,8 @@ class NativeClient:
         tls_verify_host: bool,
         ca_file_path: Optional[str],
         ca_file_content: Optional[str],
+        auth_mode: int,
+        min_version: Optional[str],
         default_ttl: float,
     ) -> None: ...
     @property

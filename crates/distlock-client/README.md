@@ -101,6 +101,34 @@ including renewal, an external CA and the table of error messages.
 URL form: `distlock://user:pass@host:7878?tls=true&tls_verify_ca=true&tls_verify_host=false&ca_file_path=%2Fetc%2Fca.crt`.
 `distlock-health` takes `--tls`, `--ca-file PEM`, `--no-verify-ca` and `--no-verify-host`.
 
+## Logging in with a key
+
+`auth_mode: 1` (the default) sends `password`. With TLS off that crosses the network in the clear.
+`auth_mode: 2` logs in with an Ed25519 key and sends no password: `password` then holds the 32-byte
+**private key** in base64 (43 characters URL-safe; the standard alphabet works too), and the client signs a
+nonce the server sends. The server must list the matching public key under the user's `public_keys`. Make a
+pair with `python -m distlock.keys` (`pip install "pydistlock[keys]"`), see the
+[server README](https://github.com/loggerheads-with-binary/distlock/blob/main/crates/distlock-server/README.md#logins-passwords-and-keys).
+
+```rust
+let client = DistLockClient {
+    auth_mode: 2,
+    password: std::env::var("DISTLOCK_PRIVATE_KEY")?, // a secret: not in source control, not in a command line
+    min_version: Some("0.3.0".into()),
+    ..DistLockClient::from_url("distlock://billing:x@10.0.0.5:7878")?
+}
+.connect()
+.await?;
+// or in a URL: distlock://billing:<private key>@10.0.0.5:7878?auth_mode=v2&min_version=0.3.0
+```
+
+`min_version` is the oldest server release you accept (default `0.3.0`, the release this client was built
+for). It is checked right after logging in; an older server fails `connect` with `Error::ServerTooOld`. A server
+that does not report a version (0.3.0 and earlier) is taken to be 0.3.0. A wrong key, an unknown user and an
+expired key all fail with the same `Error::Auth`. A server that requires keys (`DISTLOCK_MIN_AUTH_MODE=2`)
+refuses `auth_mode: 1` with a message saying so. A signature does not protect the session that follows:
+use TLS as well.
+
 ## `distlock-health`
 
 A command-line health check. It logs in to a server and prints memory, CPU (whole machine and the

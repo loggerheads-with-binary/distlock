@@ -27,6 +27,7 @@ use crate::config::ServerConfig;
 use crate::convert::{error_body, frame};
 use crate::stats::Sampler;
 use crate::users::UserDb;
+use crate::util::random_bytes;
 
 const PROTOCOL_VERSION: u32 = 1;
 const OUTBOUND_QUEUE: usize = 1024;
@@ -262,6 +263,15 @@ async fn handshake(
                 );
                 return Err(refuse(conn, seq, pb::ErrorCode::UnsupportedVersion, msg).await);
             }
+            if ctx.cfg.min_auth_mode > distlock_proto::AUTH_MODE_PASSWORD {
+                return Err(refuse(
+                    conn,
+                    seq,
+                    pb::ErrorCode::UnsupportedVersion,
+                    auth_mode_refusal(distlock_proto::AUTH_MODE_PASSWORD, ctx.cfg.min_auth_mode),
+                )
+                .await);
+            }
             if hello.client_id.is_empty()
                 || hello.client_id.len() > MAX_CLIENT_ID_BYTES
                 || hello.password.len() > MAX_PASSWORD_BYTES
@@ -285,19 +295,16 @@ async fn handshake(
                 )
                 .await);
             }
-            let label: String = hello
-                .instance_label
-                .chars()
-                .filter(|c| !c.is_control())
-                .take(MAX_LABEL_CHARS)
-                .collect();
             let cmd = Command::Open {
                 conn: conn.clone(),
                 seq,
                 client_id: hello.client_id,
-                label,
+                label: clean_label(&hello.instance_label),
             };
             ctx.actor.send(cmd).await.map_err(|_| End::Dropped)
+        }
+        Some(client_frame::Body::AuthStart(start)) => {
+            auth_by_key(reader, conn, ctx, peer, seq, start).await
         }
         Some(client_frame::Body::Attach(attach)) => {
             let cmd = Command::Attach {
@@ -312,10 +319,121 @@ async fn handshake(
             conn,
             seq,
             pb::ErrorCode::InvalidArgument,
-            "the first message must be Hello or Attach",
+            "the first message must be Hello, AuthStart or Attach",
         )
         .await),
     }
+}
+
+fn clean_label(label: &str) -> String {
+    label
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_LABEL_CHARS)
+        .collect()
+}
+
+fn auth_mode_refusal(asked: u32, min: u32) -> String {
+    format!(
+        "this server accepts auth modes {min} to {}; the client used auth mode {asked}{}",
+        distlock_proto::MAX_AUTH_MODE,
+        if asked < min {
+            " (password logins are disabled here)"
+        } else {
+            ""
+        }
+    )
+}
+
+/// Auth mode 2: send a fresh nonce, check the client's Ed25519 signature of it, then open the session
+/// exactly as a password login does. One attempt per connection.
+async fn auth_by_key(
+    reader: &mut Reader,
+    conn: &ConnHandle,
+    ctx: &Ctx,
+    peer: SocketAddr,
+    seq: u64,
+    start: pb::AuthStart,
+) -> Result<(), End> {
+    if start.protocol_version != PROTOCOL_VERSION {
+        let msg = format!(
+            "unsupported protocol version {}; this server speaks {PROTOCOL_VERSION}",
+            start.protocol_version
+        );
+        return Err(refuse(conn, seq, pb::ErrorCode::UnsupportedVersion, msg).await);
+    }
+    if !(ctx.cfg.min_auth_mode..=distlock_proto::MAX_AUTH_MODE).contains(&start.auth_mode)
+        || start.auth_mode < distlock_proto::AUTH_MODE_KEY
+    {
+        let msg = auth_mode_refusal(start.auth_mode, ctx.cfg.min_auth_mode);
+        return Err(refuse(conn, seq, pb::ErrorCode::UnsupportedVersion, msg).await);
+    }
+    if start.client_id.is_empty() || start.client_id.len() > MAX_CLIENT_ID_BYTES {
+        return Err(refuse(
+            conn,
+            seq,
+            pb::ErrorCode::InvalidArgument,
+            "client_id out of range",
+        )
+        .await);
+    }
+    // The same challenge whether or not the user exists: nothing here says which users there are.
+    let nonce = random_bytes::<32>();
+    let challenge = frame(
+        seq,
+        server_frame::Body::AuthChallenge(pb::AuthChallenge {
+            nonce: nonce.to_vec(),
+        }),
+    );
+    if conn.tx.send(Outbound::Frame(challenge)).await.is_err() {
+        return Err(End::Dropped);
+    }
+    let proof = read_frame(reader, conn).await?;
+    let proof_seq = proof.seq;
+    let Some(client_frame::Body::AuthProof(proof)) = proof.body else {
+        return Err(refuse(
+            conn,
+            proof_seq,
+            pb::ErrorCode::InvalidArgument,
+            "AuthProof must follow AuthStart",
+        )
+        .await);
+    };
+    if proof_seq == 0 {
+        return Err(refuse(
+            conn,
+            0,
+            pb::ErrorCode::InvalidArgument,
+            "seq must be non-zero",
+        )
+        .await);
+    }
+    let message = distlock_proto::auth_message(&nonce, &start.client_id);
+    match ctx
+        .users
+        .verify_key(&start.client_id, &message, &proof.signature)
+    {
+        Some(matched) => {
+            debug!(%peer, client_id = ?start.client_id, key = ?matched.identifier, "authenticated by key");
+        }
+        None => {
+            warn!(%peer, client_id = ?start.client_id, "authentication failed (key)");
+            return Err(refuse(
+                conn,
+                proof_seq,
+                pb::ErrorCode::Unauthenticated,
+                "invalid credentials",
+            )
+            .await);
+        }
+    }
+    let cmd = Command::Open {
+        conn: conn.clone(),
+        seq: proof_seq,
+        client_id: start.client_id,
+        label: clean_label(&start.instance_label),
+    };
+    ctx.actor.send(cmd).await.map_err(|_| End::Dropped)
 }
 
 async fn steady(reader: &mut Reader, conn: &ConnHandle, ctx: &Ctx) -> End {

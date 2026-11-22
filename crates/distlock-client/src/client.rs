@@ -70,6 +70,8 @@ const MAINTENANCE_TIMEOUT: Duration = Duration::from_secs(60);
 ///     tls_verify_host: true,
 ///     ca_file_path: None,
 ///     ca_file_content: None,
+///     auth_mode: 1,
+///     min_version: None,
 ///     default_ttl: Duration::from_secs(30),
 /// }
 /// .connect()
@@ -105,6 +107,15 @@ pub struct DistLockClient {
     /// The same CA certificates as PEM text, for when there is no file (a secret from a vault or an
     /// environment variable). Set at most one of `ca_file_path` and `ca_file_content`.
     pub ca_file_content: Option<String>,
+    /// How to log in: `1` sends `password` (the server checks it against a bcrypt hash; without TLS it
+    /// crosses the network in the clear), `2` proves possession of an Ed25519 private key without
+    /// sending it: `password` then holds the 32-byte private key (seed) in base64, 43 characters when
+    /// URL-safe and unpadded. The server must list the matching public key for `client_id`.
+    pub auth_mode: u32,
+    /// The oldest server release you accept, e.g. `"0.3.0"`. Checked right after logging in, and
+    /// the connection fails with [`Error::ServerTooOld`] if the server is older (or does not say).
+    /// `None`: the release this client was built to work with.
+    pub min_version: Option<String>,
     /// Lease length for acquires that do not set their own `ttl`.
     pub default_ttl: Duration,
 }
@@ -123,6 +134,8 @@ impl Default for DistLockClient {
             tls_verify_host: true,
             ca_file_path: None,
             ca_file_content: None,
+            auth_mode: 1,
+            min_version: None,
             default_ttl: Duration::from_secs(30),
         }
     }
@@ -145,6 +158,8 @@ impl std::fmt::Debug for DistLockClient {
                 "ca_file_content",
                 &self.ca_file_content.as_ref().map(|_| "<pem>"),
             )
+            .field("auth_mode", &self.auth_mode)
+            .field("min_version", &self.min_version)
             .field("default_ttl", &self.default_ttl)
             .finish()
     }
@@ -160,6 +175,10 @@ pub(crate) struct Settings {
     pool_size: usize,
     pub(crate) default_ttl: Duration,
     tls: Option<TlsSetup>,
+    /// `Some` for auth mode 2.
+    signing_key: Option<Arc<ring::signature::Ed25519KeyPair>>,
+    /// The text, for messages, and the parsed form, for comparing.
+    min_version: (String, (u64, u64, u64)),
 }
 
 impl DistLockClient {
@@ -192,6 +211,35 @@ impl DistLockClient {
         if self.ca_file_path.is_some() && self.ca_file_content.is_some() {
             return bad("set only one of ca_file_path and ca_file_content");
         }
+        let signing_key = match self.auth_mode {
+            distlock_proto::AUTH_MODE_PASSWORD => None,
+            distlock_proto::AUTH_MODE_KEY => {
+                let seed = distlock_proto::decode_key32(&self.password).ok_or_else(|| {
+                    Error::Config(
+                        "auth_mode 2 needs the private key (32 bytes in base64) as the password"
+                            .into(),
+                    )
+                })?;
+                let pair =
+                    ring::signature::Ed25519KeyPair::from_seed_unchecked(&seed).map_err(|_| {
+                        Error::Config("the private key is not a valid Ed25519 seed".into())
+                    })?;
+                Some(Arc::new(pair))
+            }
+            other => {
+                return bad(&format!(
+                    "auth_mode must be 1 (password) or 2 (key); this client does not know {other}"
+                ));
+            }
+        };
+        let min_version = self
+            .min_version
+            .unwrap_or_else(|| crate::version::EXPECTED_SERVER_VERSION.to_owned());
+        let Some(parsed) = crate::version::parse(&min_version) else {
+            return bad(&format!(
+                "min_version {min_version:?} is not a version like 0.3.0"
+            ));
+        };
         let tls = if self.tls {
             Some(crate::tls::setup(
                 &self.host,
@@ -212,6 +260,8 @@ impl DistLockClient {
             pool_size: self.pool_size,
             default_ttl: self.default_ttl,
             tls,
+            signing_key,
+            min_version: (min_version, parsed),
         })
     }
 
@@ -298,6 +348,18 @@ impl Client {
             .await?
         {
             sf::Body::StatsOk(ok) => Ok(ok),
+            // A server from before stats existed cannot decode the request, sees a message with no
+            // body, and refuses it with exactly this text.
+            sf::Body::Error(e)
+                if e.code == pb::ErrorCode::InvalidArgument as i32
+                    && e.message == "empty message" =>
+            {
+                Err(Error::Protocol(
+                    "the server does not understand the stats request: it is older than this client. \
+                     Upgrade and restart distlock-server"
+                        .into(),
+                ))
+            }
             sf::Body::Error(e) => Err(Error::from_server(e)),
             _ => Err(protocol("GetStats")),
         }
@@ -654,6 +716,46 @@ impl Inner {
         }
     }
 
+    /// Called right after a login (and on every re-join): is this server new enough?
+    ///
+    /// Servers up to and including 0.3.0 do not say which version they are. They are taken to be
+    /// 0.3.0, the newest of them, so the default `min_version` of 0.3.0 still accepts them.
+    fn check_server_version(&self, reported: &str) -> std::result::Result<(), Fail> {
+        let (text, wanted) = &self.settings.min_version;
+        let actual = if reported.is_empty() {
+            Some(crate::version::UNREPORTING_SERVER)
+        } else {
+            crate::version::parse(reported)
+        };
+        if actual.is_some_and(|v| v >= *wanted) {
+            return Ok(());
+        }
+        let server = if reported.is_empty() {
+            "no version (assumed 0.3.0, as older servers do not report one)".to_owned()
+        } else {
+            reported.to_owned()
+        };
+        Err(Fail::Fatal(Error::ServerTooOld {
+            server,
+            required: text.clone(),
+        }))
+    }
+
+    /// A server from before auth mode 2 answers `AuthStart` with its generic "first message must be
+    /// Hello or Attach" refusal. Say what that means instead of passing it on.
+    fn too_old_for_auth_mode(&self, e: &pb::Error) -> Option<Error> {
+        let old = e.code == pb::ErrorCode::InvalidArgument as i32
+            && e.message.starts_with("the first message must be Hello")
+            && !e.message.contains("AuthStart");
+        (old && self.settings.signing_key.is_some()).then(|| {
+            Error::Protocol(
+                "the server does not support auth_mode 2 (it is older than this client): \
+                 upgrade it, or use auth_mode 1"
+                    .to_owned(),
+            )
+        })
+    }
+
     fn addr(&self) -> String {
         format!("{}:{}", self.settings.host, self.settings.port)
     }
@@ -700,14 +802,17 @@ impl Inner {
             )
             .await?;
             return match reply {
-                sf::Body::AttachOk(ok) => Ok(Established {
-                    reader,
-                    sink,
-                    ping: Duration::from_millis(u64::from(ok.ping_interval_ms)),
-                    view: Some(ok.view.unwrap_or_default()),
-                    epoch: session.epoch,
-                    attach_sent,
-                }),
+                sf::Body::AttachOk(ok) => {
+                    self.check_server_version(&ok.server_version)?;
+                    Ok(Established {
+                        reader,
+                        sink,
+                        ping: Duration::from_millis(u64::from(ok.ping_interval_ms)),
+                        view: Some(ok.view.unwrap_or_default()),
+                        epoch: session.epoch,
+                        attach_sent,
+                    })
+                }
                 sf::Body::Error(e) => {
                     let code = pb::ErrorCode::try_from(e.code).unwrap_or(pb::ErrorCode::Internal);
                     if matches!(
@@ -731,19 +836,28 @@ impl Inner {
         if self.st().session.is_some() {
             return Err(Fail::Retry); // another slot logged in while we waited: join its session
         }
-        let reply = exchange(
-            &mut reader,
-            &mut sink,
-            cf::Body::Hello(pb::Hello {
-                protocol_version: PROTOCOL_VERSION,
-                client_id: self.settings.client_id.clone(),
-                password: self.settings.password.clone(),
-                instance_label: format!("distlock-client/{}", env!("CARGO_PKG_VERSION")),
-            }),
-        )
-        .await?;
+        let label = format!("distlock-client/{}", env!("CARGO_PKG_VERSION"));
+        let reply = match &self.settings.signing_key {
+            Some(key) => {
+                key_login(&mut reader, &mut sink, key, &self.settings.client_id, label).await?
+            }
+            None => {
+                exchange(
+                    &mut reader,
+                    &mut sink,
+                    cf::Body::Hello(pb::Hello {
+                        protocol_version: PROTOCOL_VERSION,
+                        client_id: self.settings.client_id.clone(),
+                        password: self.settings.password.clone(),
+                        instance_label: label,
+                    }),
+                )
+                .await?
+            }
+        };
         match reply {
             sf::Body::HelloOk(ok) => {
+                self.check_server_version(&ok.server_version)?;
                 let epoch = {
                     let mut st = self.st();
                     st.epoch += 1;
@@ -767,10 +881,15 @@ impl Inner {
                     attach_sent: Instant::now(),
                 })
             }
-            sf::Body::Error(e) => match Error::from_server(e) {
-                Error::Auth(m) => Err(Fail::Auth(m)),
-                other => Err(Fail::Fatal(other)),
-            },
+            sf::Body::Error(e) => {
+                if let Some(old) = self.too_old_for_auth_mode(&e) {
+                    return Err(Fail::Fatal(old));
+                }
+                match Error::from_server(e) {
+                    Error::Auth(m) => Err(Fail::Auth(m)),
+                    other => Err(Fail::Fatal(other)),
+                }
+            }
             other => Err(Fail::Fatal(Error::Protocol(format!(
                 "unexpected reply to Hello: {other:?}"
             )))),
@@ -1506,6 +1625,48 @@ async fn renew_loop(
             }
         }
     }
+}
+
+/// Auth mode 2: announce who we are, sign the server's nonce, send the signature. Both steps use
+/// `seq` 1; the first reply is in before the second request goes out.
+async fn key_login(
+    reader: &mut Reader,
+    sink: &mut Writer,
+    key: &ring::signature::Ed25519KeyPair,
+    client_id: &str,
+    label: String,
+) -> std::result::Result<sf::Body, Fail> {
+    let started = exchange(
+        reader,
+        sink,
+        cf::Body::AuthStart(pb::AuthStart {
+            protocol_version: PROTOCOL_VERSION,
+            auth_mode: distlock_proto::AUTH_MODE_KEY,
+            client_id: client_id.to_owned(),
+            instance_label: label,
+        }),
+    )
+    .await?;
+    let challenge = match started {
+        sf::Body::AuthChallenge(c) => c,
+        // A refusal (unknown mode, bad id) is the answer to the whole login.
+        refusal @ sf::Body::Error(_) => return Ok(refusal),
+        other => {
+            return Err(Fail::Fatal(Error::Protocol(format!(
+                "unexpected reply to AuthStart: {other:?}"
+            ))));
+        }
+    };
+    let message = distlock_proto::auth_message(&challenge.nonce, client_id);
+    let signature = key.sign(&message);
+    exchange(
+        reader,
+        sink,
+        cf::Body::AuthProof(pb::AuthProof {
+            signature: signature.as_ref().to_vec(),
+        }),
+    )
+    .await
 }
 
 /// A rejected certificate is a configuration problem the caller must fix; anything else (the peer

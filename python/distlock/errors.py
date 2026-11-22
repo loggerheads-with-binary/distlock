@@ -68,6 +68,10 @@ class MaintenanceError(DistLockError):
     server's users file could not be loaded). The server's log has the details."""
 
 
+class ServerTooOld(ConnectionFailed):
+    """The server logged us in, but it is older than the ``min_version`` this client asks for (by
+    default, the oldest release this client was built to work with). Upgrade the server, or lower
+    ``min_version`` if you know what you are doing."""
 class ServerError(DistLockError):
     """The server reported an error the client does not map to anything more specific."""
 
@@ -87,6 +91,7 @@ _BY_KIND: Dict[str, Type[DistLockError]] = {
     "lease_lost": LockLost,
     "closed": ClientClosed,
     "maintenance": MaintenanceError,
+    "server_too_old": ServerTooOld,
 }
 
 

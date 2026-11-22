@@ -57,6 +57,8 @@ class DistLockClient:
                 settings.tls_verify_host,
                 settings.ca_file_path,
                 settings.ca_file_content,
+                settings.auth_mode,
+                settings.min_version,
                 settings.default_ttl,
             )
         except _native.NativeError as e:
@@ -75,8 +77,10 @@ class DistLockClient:
         tls_verify_host: Optional[bool] = None,
         ca_file_path: Optional[str] = None,
         ca_file_content: Optional[str] = None,
+        auth_mode: Optional[int] = None,
+        min_version: Optional[str] = None,
     ) -> "DistLockClient":
-        """``distlock://client_id:password@host[:port][/namespace][?pool_size=&tls=&tls_verify_ca=&tls_verify_host=&ca_file_path=&ca_file_content=&default_ttl=]``
+        """``distlock://client_id:password@host[:port][/namespace][?pool_size=&tls=&tls_verify_ca=&tls_verify_host=&ca_file_path=&ca_file_content=&auth_mode=&min_version=&default_ttl=]``
 
         The TLS keyword arguments take priority over the same settings in the URL. Handy for keeping
         the URL in configuration and the CA in a secret::
@@ -93,6 +97,8 @@ class DistLockClient:
                 tls_verify_host=tls_verify_host,
                 ca_file_path=ca_file_path,
                 ca_file_content=ca_file_content,
+                auth_mode=auth_mode,
+                min_version=min_version,
             )
         )
 

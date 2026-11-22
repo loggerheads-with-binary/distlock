@@ -20,7 +20,9 @@ classifiers = [
 Repository = "https://github.com/loggerheads-with-binary/distlock"
 
 [project.optional-dependencies]
-dev = ["pytest>=8" , "maturin>=1.7,<2.0"]
+dev = ["pytest>=8" , "maturin>=1.7,<2.0", "cryptography>=41"]
+# Making Ed25519 keys for auth_mode=2 (python -m distlock.keys).
+keys = ["cryptography>=41"]
 
 [tool.maturin]
 # The pure-Python package is ./distlock; the compiled module is distlock._native.

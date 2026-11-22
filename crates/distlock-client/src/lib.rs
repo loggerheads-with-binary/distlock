@@ -40,6 +40,7 @@ mod lock;
 mod maintenance;
 mod tls;
 mod url;
+mod version;
 
 pub use client::{Client, DistLockClient};
 /// What [`Client::stats`] returns.

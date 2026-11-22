@@ -8,8 +8,10 @@ package distlock.v1;
 // `ServerFrame` (server -> client), prefixed by its encoded length as a u32 big-endian.
 // Frames larger than `HelloOk.max_frame_bytes` are a protocol error.
 //
-// The first client frame on a connection MUST be `Hello` (create a session, bcrypt-verified) or
-// `Attach` (join or resume an existing session with its token). Nothing else is accepted before it.
+// The first client frame on a connection MUST be `Hello` (create a session, password verified with
+// bcrypt, auth mode 1), `AuthStart` (create a session by proving possession of an Ed25519 private
+// key, auth mode 2), or `Attach` (join or resume an existing session with its token). Nothing else
+// is accepted before it.
 
 message ClientFrame {
   // Correlates the response. Non-zero, unique among this connection's in-flight requests.
@@ -27,6 +29,8 @@ message ClientFrame {
     EventWait event_wait = 19;
     EventSet event_set = 20;
     GetStats get_stats = 21;
+    AuthStart auth_start = 22;
+    AuthProof auth_proof = 23;
   }
 }
 
@@ -47,6 +51,7 @@ message ServerFrame {
     EventWaitOk event_wait_ok = 20;
     EventSetOk event_set_ok = 21;
     StatsOk stats_ok = 22;
+    AuthChallenge auth_challenge = 23;
 
     // Pushes. May be delivered on ANY connection attached to the session.
     Granted granted = 30;
@@ -103,6 +108,22 @@ message Hello {
   string instance_label = 4;    // free-form, diagnostics only (host/pid/pod)
 }
 
+// Auth mode 2: the client names itself, the server sends a random nonce, and the client signs it
+// with its Ed25519 private key. The password never exists, and nothing a sniffer sees can be replayed
+// (the nonce is new for every connection). The signed bytes are `auth_message(nonce, client_id)`:
+//   "distlock-auth-v2\0" || nonce || client_id (UTF-8)
+// The server answers with `HelloOk` (same as after `Hello`) or an `Error`. `AuthProof` reuses the
+// `seq` of `AuthStart`: its reply has been received by then, so no two requests are in flight.
+// Without TLS the signature stays safe, but the session token that follows does not.
+message AuthStart {
+  uint32 protocol_version = 1;  // currently 1
+  uint32 auth_mode = 2;         // 2
+  string client_id = 3;
+  string instance_label = 4;
+}
+message AuthChallenge { bytes nonce = 1; }   // 32 random bytes
+message AuthProof { bytes signature = 1; }   // 64 bytes
+
 message HelloOk {
   uint64 session_id = 1;
   bytes session_token = 2;          // opaque; present it in Attach on every other connection
@@ -110,6 +131,9 @@ message HelloOk {
   uint32 max_ttl_ms = 4;            // server cap on a lease / extension
   uint32 max_wait_ms = 5;           // server cap on Acquire.wait_ms
   uint32 ping_interval_ms = 6;      // send Ping at least this often when idle
+  string server_version = 7;        // the server's release version, e.g. "0.3.0"; absent from older servers
+  uint32 min_auth_mode = 8;         // the auth modes this server accepts: min..=max
+  uint32 max_auth_mode = 9;
 }
 
 message Attach {
@@ -122,6 +146,7 @@ message AttachOk {
   SessionView view = 1;
   uint32 max_frame_bytes = 2;
   uint32 ping_interval_ms = 3;
+  string server_version = 4;
 }
 
 message SessionView {
@@ -320,7 +345,7 @@ message ResetUsersOk {
   uint32 removed = 2;
   uint32 disabled = 3;
   uint32 enabled = 4;
-  uint32 password_changed = 5;
+  uint32 password_changed = 5;     // password or public keys changed
   uint32 sessions_closed = 6;      // sessions of removed/disabled users that were ended
   uint32 connections_closed = 7;   // their TCP connections, closed by the server
   bool invoker_dropped = 8;        // the sender itself was thrown out; its connection closes after this reply

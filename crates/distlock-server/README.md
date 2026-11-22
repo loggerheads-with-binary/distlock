@@ -52,6 +52,7 @@ Then:
    | `DISTLOCK_USERS_FILE` | `./config/users.json` | the users file |
    | `DISTLOCK_MAX_TTL_MS` | `60000` | longest lease |
    | `DISTLOCK_TLS_ENABLED`, `DISTLOCK_TLS_CERT_FILE`, `DISTLOCK_TLS_KEY_FILE` | `false` | serve TLS; needs the certificate and key files, [see TLS](#tls) |
+   | `DISTLOCK_MIN_AUTH_MODE` | `1` | oldest login method accepted: `1` passwords and keys, `2` keys only |
    | `DISTLOCK_STARTUP_GRACE_MS` | `60000` | refuse lock requests this long after a start |
    | `RUST_LOG`, `DISTLOCK_LOG_FORMAT` | `info`, `text` | logging (`text` or `json`) |
 
@@ -59,6 +60,30 @@ Then:
    ```bash
    DISTLOCK_USERS_FILE=./users.json distlock-server
    ```
+
+## Logins: passwords and keys
+A user in `users.json` logs in with a bcrypt `password_hash` (auth mode 1), with Ed25519 `public_keys`
+(auth mode 2), or either. Mode 2 sends no password: the server sends a fresh 32-byte nonce on each
+connection, and the client replies with a signature of `"distlock-auth-v2\0" || nonce || client_id`.
+```json
+{ "client_id": "billing",
+  "public_keys": [ { "key": "<32 bytes, base64>", "identifier": "laptop", "issuer": "ops", "expiry": "2026-12-31T00:00:00Z" } ] }
+```
+* `key`: 43 characters of base64 (URL-safe or standard, padded or not). Make a pair with
+  `python -m distlock.keys` (`pip install "pydistlock[keys]"`); the private half never reaches the server.
+* `identifier` is written to the log (debug level) when the key logs someone in. `issuer` is metadata and
+  is not read. `expiry` is an RFC 3339 time with an offset; after it the key stops logging in new sessions.
+  Sessions that are already open stay open.
+* A wrong key, an unknown user, a disabled user and an expired key all get the same `invalid credentials`.
+* Changing a user's keys or password through `reset_users` does not end their open sessions; removing or
+  disabling the user does.
+* `DISTLOCK_MIN_AUTH_MODE=2` refuses password logins. Clients that ask for a mode outside the range the server
+  accepts get `UnsupportedVersion` with the range in the message, so a future mode 3 can raise the minimum.
+* The server's version (`CARGO_PKG_VERSION`) and its accepted auth-mode range are in every login reply, which
+  is what a client's `min_version` check reads. Servers up to 0.3.0 do not report a version; clients take
+  them to be 0.3.0.
+
+Without TLS a signature keeps the key safe, but the session token that follows is readable, so use TLS too.
 
 ## Before you deploy
 

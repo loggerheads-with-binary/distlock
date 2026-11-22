@@ -4,7 +4,10 @@
   "description": "Credentials for clients of the distlock server. A user's client_id is the application name that appears on every session it opens. Not expressible in this schema but enforced by the server at load time: client_id values must be unique (case-sensitive), and the file should not be readable by group or others.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "users"],
+  "required": [
+    "version",
+    "users"
+  ],
   "properties": {
     "$schema": {
       "type": "string",
@@ -21,14 +24,18 @@
     "users": {
       "type": "array",
       "minItems": 1,
-      "items": { "$ref": "#/$defs/user" }
+      "items": {
+        "$ref": "#/$defs/user"
+      }
     }
   },
   "$defs": {
     "user": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["client_id", "password_hash"],
+      "required": [
+        "client_id"
+      ],
       "properties": {
         "client_id": {
           "type": "string",
@@ -38,7 +45,7 @@
         "password_hash": {
           "type": "string",
           "pattern": "^\\$2[aby]\\$(1[0-9]|2[0-9]|3[01])\\$[./A-Za-z0-9]{53}$",
-          "description": "bcrypt hash, cost 10-31 (12 recommended). Generate with scripts/hash-password.sh. Never store a plaintext password here."
+          "description": "bcrypt hash for password logins (auth mode 1), cost 10-31 (12 recommended). Generate with scripts/hash-password.sh. Never store a plaintext password here. Optional when the user has public_keys."
         },
         "enabled": {
           "type": "boolean",
@@ -49,6 +56,60 @@
           "type": "string",
           "maxLength": 500,
           "description": "Free-form note for humans (owner, purpose); ignored by the server."
+        },
+        "public_keys": {
+          "type": "array",
+          "description": "Ed25519 public keys for key logins (auth mode 2). Make a pair with `python -m distlock.keys`: the public half goes here, the private half stays with the client. A user may have a password hash, public keys, or both.",
+          "items": {
+            "$ref": "#/$defs/public_key"
+          }
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "password_hash"
+          ]
+        },
+        {
+          "required": [
+            "public_keys"
+          ],
+          "properties": {
+            "public_keys": {
+              "minItems": 1
+            }
+          }
+        }
+      ]
+    },
+    "public_key": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key"
+      ],
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "The 32-byte public key in base64 (standard or URL-safe, with or without padding): 43 characters unpadded.",
+          "minLength": 43,
+          "maxLength": 44
+        },
+        "identifier": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "A name for people (laptop, ci-2025). Written to the server log when the key logs someone in."
+        },
+        "issuer": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Who vouched for the key. Metadata only; never read by the server."
+        },
+        "expiry": {
+          "type": "string",
+          "format": "date-time",
+          "description": "RFC 3339 timestamp with an offset, e.g. 2026-01-31T00:00:00Z. From then on the key no longer logs anyone in. Sessions already open are not affected."
         }
       }
     }

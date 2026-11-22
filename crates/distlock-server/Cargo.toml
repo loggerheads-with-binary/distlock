@@ -22,6 +22,7 @@ dotenvy = "0.15.7"
 futures-util = { version = "0.3.34", features = ["sink"] }
 getrandom = "0.4.3"
 prost = "0.14.6"
+ring = "0.17"
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pki-types = { version = "1.16.0", features = ["std"] }
 serde = { version = "1.0.229", features = ["derive"] }

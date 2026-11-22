@@ -26,12 +26,14 @@ from .errors import (
     LockTimeout,
     MaintenanceError,
     ServerError,
+    ServerTooOld,
     SessionLost,
     TlsError,
 )
 from .event import Event
 from .lock import Lock, LockGuard
 from .maintenance import Maintenance, ResetUsersReport
+from .keys import generate_keypair, public_key_for
 from .settings import ClientSettings
 from .stats import ProcessStats, ServerStats, SystemStats
 
@@ -39,6 +41,8 @@ __all__ = [
     "__version__",
     "DistLockClient",
     "ClientSettings",
+    "generate_keypair",
+    "public_key_for",
     "Lock",
     "LockGuard",
     "Event",
@@ -64,4 +68,5 @@ __all__ = [
     "MaintenanceError",
     "ClientClosed",
     "ServerError",
+    "ServerTooOld",
 ]

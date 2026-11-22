@@ -256,6 +256,9 @@ impl Actor {
             max_ttl_ms: ms(self.cfg.lock.max_ttl),
             max_wait_ms: ms(self.cfg.lock.max_wait),
             ping_interval_ms: ms(self.cfg.ping_interval),
+            server_version: env!("CARGO_PKG_VERSION").to_owned(),
+            min_auth_mode: self.cfg.min_auth_mode,
+            max_auth_mode: distlock_proto::MAX_AUTH_MODE,
         };
         self.reply(conn.id, seq, server_frame::Body::HelloOk(ok));
     }
@@ -307,6 +310,7 @@ impl Actor {
             view: Some(view_to_pb(view)),
             max_frame_bytes: u32::try_from(self.cfg.max_frame_bytes).unwrap_or(u32::MAX),
             ping_interval_ms: ms(self.cfg.ping_interval),
+            server_version: env!("CARGO_PKG_VERSION").to_owned(),
         };
         self.reply(conn.id, seq, server_frame::Body::AttachOk(ok));
     }
@@ -449,6 +453,8 @@ impl Actor {
             | client_frame::Body::Attach(_)
             | client_frame::Body::Ping(_)
             | client_frame::Body::GetStats(_)
+            | client_frame::Body::AuthStart(_)
+            | client_frame::Body::AuthProof(_)
             | client_frame::Body::Maintenance(_) => {
                 self.reply(
                     conn,

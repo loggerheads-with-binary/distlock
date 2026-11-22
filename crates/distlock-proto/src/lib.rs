@@ -5,8 +5,75 @@ pub mod v1 {
     include!(concat!(env!("OUT_DIR"), "/distlock.v1.rs"));
 }
 
+/// Login by password (a bcrypt hash on the server). `Hello`.
+pub const AUTH_MODE_PASSWORD: u32 = 1;
+/// Login by Ed25519 signature over a server nonce. `AuthStart`, `AuthChallenge`, `AuthProof`.
+pub const AUTH_MODE_KEY: u32 = 2;
+/// The newest auth mode this version of the protocol crate knows.
+pub const MAX_AUTH_MODE: u32 = AUTH_MODE_KEY;
+
+/// The bytes a client signs to log in with auth mode 2. The prefix keeps a signature made for this
+/// purpose from being usable for anything else.
+pub fn auth_message(nonce: &[u8], client_id: &str) -> Vec<u8> {
+    let mut m = Vec::with_capacity(17 + nonce.len() + client_id.len());
+    m.extend_from_slice(b"distlock-auth-v2\0");
+    m.extend_from_slice(nonce);
+    m.extend_from_slice(client_id.as_bytes());
+    m
+}
+
+/// A 32-byte key (an Ed25519 seed or public key) from base64 text. Accepts the standard and the
+/// URL-safe alphabet, with or without padding, so a key can be pasted into a URL as it is.
+pub fn decode_key32(text: &str) -> Option<[u8; 32]> {
+    use base64::Engine;
+    let url_safe: String = text
+        .trim()
+        .trim_end_matches('=')
+        .chars()
+        .map(|c| match c {
+            '+' => '-',
+            '/' => '_',
+            c => c,
+        })
+        .collect();
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(url_safe)
+        .ok()?;
+    bytes.try_into().ok()
+}
+
+/// The URL-safe, unpadded base64 text of a key: 43 characters for 32 bytes.
+pub fn encode_key(key: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key)
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn keys_round_trip_in_every_base64_spelling() {
+        let key: [u8; 32] = std::array::from_fn(|i| (i * 7 + 250) as u8); // has bytes that give + and /
+        let url = encode_key(&key);
+        assert_eq!(url.len(), 43);
+        assert_eq!(decode_key32(&url), Some(key));
+        let standard = url.replace('-', "+").replace('_', "/");
+        assert_eq!(decode_key32(&standard), Some(key));
+        assert_eq!(decode_key32(&format!("{standard}=")), Some(key));
+        assert_eq!(decode_key32(&format!("  {url}\n")), Some(key));
+        assert_eq!(decode_key32(&url[..42]), None);
+        assert_eq!(decode_key32(""), None);
+        assert_eq!(decode_key32("not base64!"), None);
+    }
+
+    #[test]
+    fn the_signed_message_is_bound_to_the_nonce_and_the_user() {
+        assert_ne!(auth_message(b"n1", "a"), auth_message(b"n2", "a"));
+        assert_ne!(auth_message(b"n", "a"), auth_message(b"n", "b"));
+        assert!(auth_message(b"n", "a").starts_with(b"distlock-auth-v2\0"));
+    }
+
     use super::v1::*;
     use prost::Message;
 

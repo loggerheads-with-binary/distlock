@@ -4,13 +4,15 @@ use std::time::Duration;
 use crate::client::DistLockClient;
 use crate::error::{Error, Result};
 
-const QUERY_KEYS: [&str; 7] = [
+const QUERY_KEYS: [&str; 9] = [
     "pool_size",
     "tls",
     "tls_verify_ca",
     "tls_verify_host",
     "ca_file_path",
     "ca_file_content",
+    "auth_mode",
+    "min_version",
     "default_ttl",
 ];
 
@@ -131,6 +133,14 @@ impl DistLockClient {
                 }
                 "ca_file_path" => c.ca_file_path = Some(value.clone().into()),
                 "ca_file_content" => c.ca_file_content = Some(value.clone()),
+                // `v2` and `2` both mean auth mode 2.
+                "auth_mode" => {
+                    c.auth_mode = value
+                        .trim_start_matches(['v', 'V'])
+                        .parse()
+                        .map_err(|_| invalid())?;
+                }
+                "min_version" => c.min_version = Some(value.clone()),
                 _ => {
                     let secs: f64 = value.parse().map_err(|_| invalid())?;
                     c.default_ttl = Duration::try_from_secs_f64(secs).map_err(|_| invalid())?;
@@ -184,6 +194,22 @@ mod tests {
             c.ca_file_path.as_deref(),
             Some(std::path::Path::new("/etc/ca.pem"))
         );
+    }
+
+    #[test]
+    fn parses_auth_mode_and_min_version() {
+        let c = DistLockClient::from_url("distlock://a:b@h").unwrap();
+        assert_eq!((c.auth_mode, c.min_version), (1, None));
+        let c =
+            DistLockClient::from_url("distlock://a:key@h?auth_mode=v2&min_version=0.4.1").unwrap();
+        assert_eq!((c.auth_mode, c.min_version.as_deref()), (2, Some("0.4.1")));
+        assert_eq!(
+            DistLockClient::from_url("distlock://a:b@h?auth_mode=2")
+                .unwrap()
+                .auth_mode,
+            2
+        );
+        assert!(DistLockClient::from_url("distlock://a:b@h?auth_mode=two").is_err());
     }
 
     #[test]

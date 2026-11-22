@@ -25,6 +25,9 @@ pub struct ServerConfig {
     pub ping_interval: Duration,
     pub idle_connection_timeout: Duration,
     pub users_file: PathBuf,
+    /// `DISTLOCK_MIN_AUTH_MODE`: the oldest login method accepted. 1 = passwords and keys, 2 = keys
+    /// only (password logins are refused).
+    pub min_auth_mode: u32,
     /// `DISTLOCK_TLS_ENABLED`. `true`: the listener speaks TLS only, and the server refuses to start
     /// without a usable certificate and key. `false`: plaintext.
     pub tls_enabled: bool,
@@ -142,6 +145,19 @@ impl ServerConfig {
         let users_file = PathBuf::from(
             raw(get, "DISTLOCK_USERS_FILE").unwrap_or_else(|| "./config/users.json".to_owned()),
         );
+        let min_auth_mode = parse(
+            get,
+            "DISTLOCK_MIN_AUTH_MODE",
+            distlock_proto::AUTH_MODE_PASSWORD,
+        )?;
+        if !(distlock_proto::AUTH_MODE_PASSWORD..=distlock_proto::MAX_AUTH_MODE)
+            .contains(&min_auth_mode)
+        {
+            return Err(err(
+                "DISTLOCK_MIN_AUTH_MODE",
+                format!("must be between 1 and {}", distlock_proto::MAX_AUTH_MODE),
+            ));
+        }
         let tls_cert_file = raw(get, "DISTLOCK_TLS_CERT_FILE").map(PathBuf::from);
         let tls_key_file = raw(get, "DISTLOCK_TLS_KEY_FILE").map(PathBuf::from);
         let tls_enabled = parse(get, "DISTLOCK_TLS_ENABLED", false)?;
@@ -285,6 +301,7 @@ impl ServerConfig {
             ping_interval,
             idle_connection_timeout,
             users_file,
+            min_auth_mode,
             tls_enabled,
             tls_cert_file,
             tls_key_file,
@@ -392,6 +409,20 @@ mod tests {
         assert!(c.tls_enabled && c.tls_cert_file.is_some() && c.tls_key_file.is_some());
         let off = cfg(&[("DISTLOCK_TLS_ENABLED", "false")]).unwrap();
         assert!(!off.tls_enabled && !ServerConfig::default().tls_enabled);
+    }
+
+    #[test]
+    fn the_minimum_auth_mode_is_1_or_2() {
+        let mode = |v: &str| ServerConfig::from_lookup(lookup(&[("DISTLOCK_MIN_AUTH_MODE", v)]));
+        assert_eq!(ServerConfig::default().min_auth_mode, 1);
+        assert_eq!(mode("2").unwrap().min_auth_mode, 2);
+        for bad in ["0", "3", "-1", "keys"] {
+            assert_eq!(
+                mode(bad).unwrap_err().var,
+                "DISTLOCK_MIN_AUTH_MODE",
+                "{bad}"
+            );
+        }
     }
 
     #[test]

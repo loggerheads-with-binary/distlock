@@ -33,6 +33,7 @@ distlock-proto = { version = "0.3.0", path = "../distlock-proto" }
 futures-util = { version = "0.3.34", features = ["sink"] }
 getrandom = "0.4.3"
 prost = "0.14.6"
+ring = "0.17"
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pki-types = { version = "1.16.0", features = ["std"] }
 rustls-webpki = { version = "0.103.17", default-features = false, features = ["ring", "std"] }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qsl, unquote, urlsplit
 
@@ -10,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, f
 from .errors import ConfigError
 
 _SCHEME = "distlock"
-_QUERY_PARAMETERS = ("pool_size", "tls", "tls_verify_ca", "tls_verify_host", "ca_file_path", "ca_file_content", "default_ttl")
+_QUERY_PARAMETERS = ("pool_size", "tls", "tls_verify_ca", "tls_verify_host", "ca_file_path", "ca_file_content", "auth_mode", "min_version", "default_ttl")
 #: The server counts leases in 32-bit milliseconds.
 _MAX_TTL_SECONDS = 4_000_000.0
 
@@ -57,6 +58,14 @@ class ClientSettings(BaseModel):
     #: The same CA certificates as PEM *text*, for when there is no file (a secret from a vault or an
     #: environment variable).
     ca_file_content: Optional[str] = Field(default=None, min_length=1)
+    #: How to log in. ``1``: send ``password`` (checked against a bcrypt hash; without TLS it crosses
+    #: the network in the clear). ``2``: prove possession of an Ed25519 private key without sending
+    #: it; ``password`` then holds the 32-byte private key in base64 (43 characters URL-safe). The
+    #: server must list the matching public key for ``client_id``. See ``distlock.keys``.
+    auth_mode: int = Field(default=1, ge=1)
+    #: The oldest server release accepted, like ``"0.3.0"``. Checked right after logging in. ``None``:
+    #: the release this client was built to work with.
+    min_version: Optional[str] = None
     #: Lease length, in seconds, for locks that do not set their own ``ttl``.
     default_ttl: float = Field(default=30.0, gt=0, le=_MAX_TTL_SECONDS)
 
@@ -65,6 +74,19 @@ class ClientSettings(BaseModel):
         if self.ca_file_path is not None and self.ca_file_content is not None:
             raise ValueError("set only one of ca_file_path and ca_file_content")
         return self
+
+    @model_validator(mode="after")
+    def _key_login_needs_a_key(self) -> "ClientSettings":
+        if self.auth_mode == 2 and _key32(self.password.get_secret_value()) is None:
+            raise ValueError("auth_mode 2 needs the private key (32 bytes in base64) as the password")
+        return self
+
+    @field_validator("min_version")
+    @classmethod
+    def _min_version(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and not re.fullmatch(r"[vV]?\d+\.\d+(\.\d+)?([-+][0-9A-Za-z.+-]*)?", value.strip()):
+            raise ValueError("must be a version like 0.3.0")
+        return value
 
     @field_validator("namespace")
     @classmethod
@@ -85,8 +107,10 @@ class ClientSettings(BaseModel):
         tls_verify_host: Optional[bool] = None,
         ca_file_path: Optional[str] = None,
         ca_file_content: Optional[str] = None,
+        auth_mode: Optional[int] = None,
+        min_version: Optional[str] = None,
     ) -> "ClientSettings":
-        """Parse ``distlock://client_id:password@host[:port][/namespace][?pool_size=&tls=&tls_verify_ca=&tls_verify_host=&ca_file_path=&ca_file_content=&default_ttl=]``.
+        """Parse ``distlock://client_id:password@host[:port][/namespace][?pool_size=&tls=&tls_verify_ca=&tls_verify_host=&ca_file_path=&ca_file_content=&auth_mode=&min_version=&default_ttl=]``.
 
         User and password may be percent-encoded. The path, if any, is the namespace (one segment).
         ``default_ttl`` is in seconds. Unknown query parameters are an error, not ignored.
@@ -104,6 +128,8 @@ class ClientSettings(BaseModel):
             "tls_verify_host": tls_verify_host,
             "ca_file_path": ca_file_path,
             "ca_file_content": ca_file_content,
+            "auth_mode": auth_mode,
+            "min_version": min_version,
         }
         if ca_file_path is not None and ca_file_content is not None:
             raise ConfigError("set only one of ca_file_path and ca_file_content")
@@ -116,6 +142,19 @@ class ClientSettings(BaseModel):
             return cls.model_validate(fields)
         except ValidationError as e:
             raise ConfigError(f"invalid distlock URL: {validation_message(e)}") from None
+
+
+def _key32(text: str) -> Optional[bytes]:
+    """The 32 bytes behind a base64 (standard or URL-safe, padded or not) key, or ``None``."""
+    import base64
+    import binascii
+
+    cleaned = text.strip().rstrip("=").replace("+", "-").replace("/", "_")
+    try:
+        raw = base64.urlsafe_b64decode(cleaned + "=" * (-len(cleaned) % 4))
+    except (binascii.Error, ValueError):
+        return None
+    return raw if len(raw) == 32 else None
 
 
 def _parse_url(url: str) -> Dict[str, Any]:
@@ -163,5 +202,5 @@ def _parse_url(url: str) -> Dict[str, Any]:
         if key in seen:
             raise ConfigError(f"URL parameter {key!r} appears more than once")
         seen.add(key)
-        fields[key] = value
+        fields[key] = value.lstrip("vV") if key == "auth_mode" else value  # v2 means 2
     return fields

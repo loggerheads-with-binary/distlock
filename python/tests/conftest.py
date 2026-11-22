@@ -155,12 +155,16 @@ def users_file(tmp_path_factory: pytest.TempPathFactory) -> Path:
 def make_server(users_file: Path, tmp_path_factory: pytest.TempPathFactory) -> Iterator[Callable[..., Server]]:
     servers = []
 
-    def factory(users: Optional[Dict[str, bool]] = None, **env: str) -> Server:
+    def factory(users: Optional[Dict[str, bool]] = None, users_json: Optional[str] = None, **env: str) -> Server:
         """``users``: give this server its own users file, ``{client_id: enabled}`` (password
         ``pw-<client_id>``), which the test may rewrite. Otherwise it shares the default file."""
         workdir = tmp_path_factory.mktemp("server")
         file = users_file
-        if users is not None:
+        if users_json is not None:
+            file = workdir / "users.json"
+            file.write_text(users_json)
+            file.chmod(0o600)
+        elif users is not None:
             file = workdir / "users.json"
             file.write_text(users_document(users))
             file.chmod(0o600)
