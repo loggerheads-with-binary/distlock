@@ -26,9 +26,10 @@ jobs:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@nextest
       - name: Install htpasswd (the tests make bcrypt hashes with it)
         run: sudo apt-get update && sudo apt-get install -y apache2-utils
-      - run: cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
+      - run: cargo llvm-cov nextest --workspace --locked --lcov --output-path lcov.info
       - name: Summary
         run: cargo llvm-cov report >> "$GITHUB_STEP_SUMMARY"
       - uses: codecov/codecov-action@v5

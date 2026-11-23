@@ -21,7 +21,8 @@ Four Rust crates (one workspace) and one Python package (`python/`, its own buil
 ```bash
 cargo build --release -p distlock-server      # target/release/distlock-server
 cargo build --release -p distlock-client      # the Rust client library
-cargo test --workspace                        # Rust tests (starts real servers on local ports)
+cargo nextest run --workspace                 # Rust tests (starts real servers on local ports); cargo install cargo-nextest --locked
+cargo test --workspace --doc                  # doctests (nextest skips them)
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 ```
@@ -33,10 +34,10 @@ Python (from `python/`):
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install maturin pytest "pydantic>=2.5"
+pip install maturin pytest pytest-xdist "pydantic>=2.5"
 maturin develop                         # build the extension, install editable
 (cd .. && cargo build -p distlock-server)   # the tests launch this binary
-pytest
+pytest -n auto
 ```
 
 Tip: if your checkout is on an external or network volume, set `CARGO_TARGET_DIR` to a local

@@ -56,7 +56,10 @@ jobs:
       - name: Install htpasswd (the tests make bcrypt hashes with it)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y apache2-utils
-      - run: cargo test --workspace --locked
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest run --workspace --locked
+      # nextest does not run doctests.
+      - run: cargo test --workspace --doc --locked
   # The health-check tool is released for Windows too, but the test suite is not run there. This keeps
   # it compiling, so a Windows break shows up on the pull request and not when a release is cut.
   windows:
@@ -101,13 +104,13 @@ jobs:
         run: |
           python -m venv .venv
           . .venv/bin/activate
-          pip install maturin pytest pytest-cov "pydantic>=2.5"
+          pip install maturin pytest pytest-cov pytest-xdist "pydantic>=2.5"
           maturin develop
           if [ "$WITH_COVERAGE" = true ]; then
-            pytest --cov=distlock --cov-report=xml --cov-report=term-missing
+            pytest -n auto --cov=distlock --cov-report=xml --cov-report=term-missing
             coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
           else
-            pytest
+            pytest -n auto
           fi
       # Never blocks: a coverage upload problem must not fail CI or a release.
       - uses: codecov/codecov-action@v5

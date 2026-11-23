@@ -125,12 +125,12 @@ Runs the test suites the way CI does.
 
 ```bash
 scripts/test.sh             # Rust and Python
-scripts/test.sh rust        # cargo test --workspace
-scripts/test.sh python      # build the server, maturin develop, pytest
+scripts/test.sh rust        # cargo nextest run --workspace, then the doctests
+scripts/test.sh python      # build the server, maturin develop, pytest -n auto (pytest-xdist)
 scripts/test.sh python -k only_waiters    # extra arguments go to pytest
 ```
 
-* Needs a Rust toolchain, Python 3.9 or later, and `htpasswd` (preinstalled on macOS; the
+* Needs a Rust toolchain, `cargo-nextest`, Python 3.9 or later, and `htpasswd` (preinstalled on macOS; the
   `apache2-utils` package on Linux).
 * The Python part builds `distlock-server` first, and sets `DISTLOCK_SERVER_BIN` to that binary.
   It honours `CARGO_TARGET_DIR` for the binary location.
