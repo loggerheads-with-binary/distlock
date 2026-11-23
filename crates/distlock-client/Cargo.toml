@@ -30,7 +30,7 @@ cli = ["dep:clap", "dep:rcgen", "dep:serde_json", "dep:time", "dep:ureq", "dep:x
 [dependencies]
 bytes = "1.12.2"
 clap = { version = "4.6", default-features = false, features = ["std", "derive", "env", "help", "usage", "error-context", "suggestions"], optional = true }
-distlock-proto = { version = "0.5.0", path = "../distlock-proto" }
+distlock-proto = { version = "0.5.5", path = "../distlock-proto" }
 futures-util = { version = "0.3.34", features = ["sink"] }
 getrandom = "0.4.3"
 prost = "0.14.6"

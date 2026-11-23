@@ -98,8 +98,11 @@ if [ "$dry" = 0 ] && command -v cargo >/dev/null 2>&1; then
   # Refresh only the workspace packages' entries in Cargo.lock. External dependencies stay as locked.
   cargo update --workspace --quiet --manifest-path "$ROOT_MANIFEST"
   echo "refreshed workspace entries in $(rel "$REPO_ROOT/Cargo.lock")"
+  # python/ is its own workspace with its own lock file, which pins the same crates.
+  cargo update --workspace --quiet --manifest-path "$PY_CARGO"
+  echo "refreshed workspace entries in $(rel "$PY_CARGO" | sed 's|Cargo.toml$|Cargo.lock|')"
 elif [ "$dry" = 0 ]; then
-  echo "cargo not found: Cargo.lock not refreshed; run cargo update --workspace" >&2
+  echo "cargo not found: Cargo.lock (and python/Cargo.lock) not refreshed; run cargo update --workspace in each" >&2
 fi
 if [ "$dry" = 0 ]; then
   echo "review with: $SCRIPT_DIR/check-versions.sh"
