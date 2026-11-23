@@ -12,7 +12,8 @@ import contextvars
 import logging
 from typing import Any, Awaitable, Callable, Optional, Tuple, TypeVar, Union
 
-from . import _native
+from . import _native, defaults
+from ._unset import _UNSET
 from .enums import LockMode, PreviousStatus, ProcessingStatus
 from .errors import DistLockError, InvalidArgument, LockLost, translate
 
@@ -20,8 +21,6 @@ _log = logging.getLogger("distlock")
 
 T = TypeVar("T")
 
-#: Marks "argument not given", so ``wait=None`` (wait as long as the server allows) stays meaningful.
-_UNSET: Any = object()
 
 #: The guards entered with ``with lock`` / ``async with lock`` in the current context, innermost last.
 #: A context variable (not an attribute of the Lock) so one Lock can be used by many tasks at once.
@@ -64,7 +63,7 @@ class Lock:
         kind: str,
         ttl: Optional[float],
         namespace: Optional[str],
-        wait: Optional[float],
+        wait: Any = _UNSET,
         capacity: int = 0,
         permits: int = 1,
     ) -> None:
@@ -72,7 +71,7 @@ class Lock:
             raise InvalidArgument("a lock needs a non-empty name")
         if ttl is not None and not ttl > 0:
             raise InvalidArgument("ttl must be a positive number of seconds")
-        if wait is not None and not wait >= 0:
+        if wait is not _UNSET and wait is not None and not wait >= 0:
             raise InvalidArgument("wait must be zero or a positive number of seconds")
         if namespace is not None and ":" in namespace:
             raise InvalidArgument("namespace must not contain ':'")
@@ -83,7 +82,14 @@ class Lock:
         self.name = name
         self.ttl = ttl
         self.namespace = namespace
-        self.wait = wait
+        self._wait_given = wait
+
+    @property
+    def wait(self) -> Optional[float]:
+        """How long acquiring waits by default, in seconds: the lock's own ``wait``, else the
+        :mod:`~distlock.defaults` for its kind. ``None``: as long as the server allows. Evaluated
+        now, so it follows later changes to the defaults."""
+        return defaults.resolve_wait(self._kind, self._wait_given)
 
     @property
     def mode(self) -> Optional[LockMode]:
@@ -93,20 +99,24 @@ class Lock:
     # ------------------------------------------------------------------ acquiring
 
     def _wait(self, wait: Any) -> Optional[float]:
-        return self.wait if wait is _UNSET else wait
+        return defaults.resolve_wait(self._kind, self._wait_given if wait is _UNSET else wait)
+
+    def _ttl(self) -> Optional[float]:
+        return defaults.resolve_ttl(self._kind, self.ttl)
 
     async def acquire(self, *, wait: Any = _UNSET) -> "LockGuard":
         """Wait for the lock and return its guard.
 
         ``wait`` is in seconds: ``None`` waits as long as the server allows, ``0`` does not wait
         (:class:`~distlock.errors.LockBusy` if taken), anything else raises
-        :class:`~distlock.errors.LockTimeout` when it runs out. Defaults to the lock's own ``wait``.
+        :class:`~distlock.errors.LockTimeout` when it runs out. Defaults to the lock's own ``wait``,
+        then to the :mod:`~distlock.defaults`.
         """
         native_lock = await _acall(
             self._native.acquire,
             self.name,
             self._kind,
-            self.ttl,
+            self._ttl(),
             self._wait(wait),
             self.namespace,
             self._capacity,
@@ -117,7 +127,13 @@ class Lock:
     async def try_acquire(self) -> Optional["LockGuard"]:
         """The guard if the lock was free right now, otherwise ``None``. Never waits."""
         native_lock = await _acall(
-            self._native.try_acquire, self.name, self._kind, self.ttl, self.namespace, self._capacity, self._permits
+            self._native.try_acquire,
+            self.name,
+            self._kind,
+            self._ttl(),
+            self.namespace,
+            self._capacity,
+            self._permits,
         )
         return None if native_lock is None else LockGuard(native_lock, self)
 
@@ -127,7 +143,7 @@ class Lock:
             self._native.acquire_sync,
             self.name,
             self._kind,
-            self.ttl,
+            self._ttl(),
             self._wait(wait),
             self.namespace,
             self._capacity,
@@ -141,7 +157,7 @@ class Lock:
             self._native.try_acquire_sync,
             self.name,
             self._kind,
-            self.ttl,
+            self._ttl(),
             self.namespace,
             self._capacity,
             self._permits,

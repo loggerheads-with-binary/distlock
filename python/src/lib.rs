@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use distlock_client::{
     Acquire, Client, DistLockClient, Error, EventSet, EventWait, Kind, Lock, Lost, Published,
-    ResetUsersReport, ServerStats, SetResult, State,
+    ResetUsersReport, ServerStats, SetResult, State, Wait,
 };
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
@@ -49,6 +49,15 @@ fn secs(name: &str, value: f64) -> PyResult<Duration> {
 
 fn opt_secs(name: &str, value: Option<f64>) -> PyResult<Option<Duration>> {
     value.map(|v| secs(name, v)).transpose()
+}
+
+/// A wait from Python, which has already applied its own defaults: `None` is "as long as the server
+/// allows" for certain, so it must not fall back to the Rust crate's process-wide defaults.
+fn opt_wait(name: &str, value: Option<f64>) -> PyResult<Wait> {
+    Ok(match value {
+        None => Wait::Forever,
+        Some(v) => Wait::For(secs(name, v)?),
+    })
 }
 
 /// Run a future to completion on the shared runtime with the GIL released, waking every 100 ms to
@@ -212,7 +221,7 @@ fn build_event_wait(
 ) -> PyResult<EventWait> {
     Ok(EventWait {
         name,
-        wait: opt_secs("timeout", wait)?,
+        wait: opt_wait("timeout", wait)?,
         after,
         namespace,
     })
@@ -262,7 +271,7 @@ fn build_acquire(
         name,
         kind,
         ttl: opt_secs("ttl", ttl)?,
-        wait: opt_secs("wait", wait)?,
+        wait: opt_wait("wait", wait)?,
         namespace,
     })
 }

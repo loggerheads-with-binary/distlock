@@ -20,9 +20,10 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from . import _native
+from . import _native, defaults
+from ._unset import _UNSET
 from .errors import InvalidArgument
-from .lock import _UNSET, _acall, _call
+from .lock import _acall, _call
 
 
 class Event:
@@ -54,8 +55,8 @@ class Event:
         name: str,
         *,
         namespace: Optional[str],
-        timeout: Optional[float],
-        publish_for: Optional[float],
+        timeout: Any = _UNSET,
+        publish_for: Any = _UNSET,
     ) -> None:
         if not isinstance(name, str) or not name:
             raise InvalidArgument("an event needs a non-empty name")
@@ -67,15 +68,26 @@ class Event:
         self._seen = 0
         self.name = name
         self.namespace = namespace
-        self.timeout = timeout
-        self.publish_for = publish_for
+        self._default_timeout = timeout
+        self._default_publish_for = publish_for
+
+    @property
+    def timeout(self) -> Optional[float]:
+        """How long :meth:`wait` waits by default: the event's own ``timeout``, else the
+        :mod:`~distlock.defaults`. ``None``: as long as the server allows."""
+        return defaults.resolve_event_wait(self._default_timeout)
+
+    @property
+    def publish_for(self) -> Optional[float]:
+        """The default publish window of :meth:`set`: the event's own, else the
+        :mod:`~distlock.defaults`. ``None``: the server's default."""
+        return defaults.resolve_event_publish_for(self._default_publish_for)
 
     # ------------------------------------------------------------------ waiting
 
     def _timeout(self, timeout: Any) -> Optional[float]:
-        value = self.timeout if timeout is _UNSET else timeout
-        _check_seconds("timeout", value)
-        return value
+        _check_seconds("timeout", timeout)
+        return defaults.resolve_event_wait(self._default_timeout if timeout is _UNSET else timeout)
 
     def _after(self, after: Optional[int]) -> int:
         if after is None:
@@ -116,9 +128,10 @@ class Event:
     # ------------------------------------------------------------------ setting
 
     def _publish_for(self, publish_for: Any) -> Optional[float]:
-        value = self.publish_for if publish_for is _UNSET else publish_for
-        _check_seconds("publish_for", value)
-        return value
+        _check_seconds("publish_for", publish_for)
+        return defaults.resolve_event_publish_for(
+            self._default_publish_for if publish_for is _UNSET else publish_for
+        )
 
     @staticmethod
     def _value(value: Any) -> Optional[str]:
@@ -166,8 +179,8 @@ class Event:
         return f"Event({self.name!r}{ns}, last_id={self._seen})"
 
 
-def _check_seconds(name: str, value: Optional[float]) -> None:
-    if value is None:
+def _check_seconds(name: str, value: Any) -> None:
+    if value is None or value is _UNSET:
         return
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not value >= 0:
         raise InvalidArgument(f"{name} must be None or a non-negative number of seconds")

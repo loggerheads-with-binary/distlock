@@ -142,8 +142,8 @@ client.Semaphore("name", capacity=5, permits=1)
 
 * `ttl` is the lease length in seconds (default: the client's `default_ttl`). It is **renewed in the
   background** for as long as you hold the lock, so it is a liveness bound, not a time limit on your work.
-* `wait` is how long acquiring may wait: `None` (default) as long as the server allows, `0` not at all,
-  otherwise `LockTimeout` after that many seconds.
+* `wait` is how long acquiring may wait: `None` as long as the server allows (the default, unless you
+  changed it with `distlock.defaults`), `0` not at all, otherwise `LockTimeout` after that many seconds.
 * A `Lock` is a reusable definition. Enter it as many times as you like, from as many tasks or threads
   as you like; each entry gets its own grant and its own `LockGuard`.
 * Read and write locks are fair (FIFO): a waiting writer is not starved by later readers.
@@ -158,6 +158,41 @@ guard = lock.acquire_sync() / lock.try_acquire_sync()
 
 Cancellation is safe: cancelling a waiting `acquire` (a `wait_for` timeout, a cancelled task) withdraws
 the request from the server, so it can never be granted to nobody; Ctrl-C interrupts a blocking acquire the same way.
+
+### Primitives
+
+A primitive is a lock definition without a client, so one definition can be bound again and again, to
+one client or to several:
+
+```python
+from distlock import ReadLockPrimitive   # also Mutex-, WriteLock-, Semaphore- and EventPrimitive
+
+readers = ReadLockPrimitive("catalog", ttl=20, wait=5)
+
+async with readers.bind(client) as guard: ...        # the primitive binds itself...
+async with client.attach(readers) as guard: ...      # ...or the client attaches it
+async with readers.bind(other_client) as guard: ...  # same definition, another client
+```
+
+`bind` returns the usual `Lock` (an `Event` for an `EventPrimitive`); nothing happens on the server until
+you enter it. `client.Mutex(...)`, `client.RLock(...)` and friends are shorthands for the same thing.
+
+### Defaults
+
+Anything a lock or event leaves out comes from `distlock.defaults`, looked up when it is *used*:
+
+```python
+from distlock.defaults import set_default_wait, set_default_semaphore_wait, set_default_ttl
+
+set_default_wait(10)            # every lock and event waits at most 10 s
+set_default_semaphore_wait(60)  # semaphores wait up to a minute
+set_default_ttl(45)             # lease length; the client's default_ttl still applies if none is set
+```
+
+The kind-specific default (`mutex`, `read`, `write`, `semaphore`; `event` for waits) beats the general
+one, and an argument given on the lock beats both. `None` is a real value for waits ("as long as the
+server allows"); `reset_default_*()` and `reset_all()` forget a default. With nothing set, behaviour is
+unchanged. The current values are the `DEFAULT_*` variables at the top of `distlock/defaults.py`.
 
 ## Events
 

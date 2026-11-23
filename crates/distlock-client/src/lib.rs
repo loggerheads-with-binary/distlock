@@ -30,14 +30,39 @@
 //!
 //! Lock names are sent to the server as `namespace:family:name`, where the family is `mutex`,
 //! `rw` or `sem`. That is why a mutex and a read/write lock with the same name never conflict.
+//!
+//! # Primitives and defaults
+//!
+//! A [`Primitive`] ([`MutexPrimitive`], [`ReadLockPrimitive`], [`WriteLockPrimitive`],
+//! [`SemaphorePrimitive`]; also [`Acquire`], [`EventWait`] and [`EventSet`]) describes *what* you
+//! want without a client, so one definition can be bound again and again, to the same client or to
+//! different ones:
+//!
+//! ```no_run
+//! # async fn demo(a: distlock_client::Client, b: distlock_client::Client) -> distlock_client::Result<()> {
+//! use distlock_client::{Attach, Primitive, ReadLockPrimitive};
+//!
+//! let readers = ReadLockPrimitive::new("catalog");
+//! let lock = readers.bind(&a).await?;   // the primitive binds itself to a client...
+//! drop(lock);
+//! let lock = a.attach(&readers).await?; // ...or the client attaches the primitive
+//! drop(lock);
+//! let lock = b.attach(&readers).await?; // and the same primitive works on another client
+//! # drop(lock); Ok(()) }
+//! ```
+//!
+//! What a primitive leaves out (`ttl`, `wait`, the event publish window) comes from the
+//! process-wide [`defaults`], then from the client.
 
 pub mod blocking;
 mod client;
 mod conn;
+pub mod defaults;
 mod error;
 pub mod event;
 mod lock;
 mod maintenance;
+pub mod primitive;
 mod tls;
 mod url;
 mod version;
@@ -47,5 +72,9 @@ pub use client::{Client, DistLockClient};
 pub use distlock_proto::v1::StatsOk as ServerStats;
 pub use error::{Error, Result};
 pub use event::{EventSet, EventWait, Published, SetResult};
-pub use lock::{Acquire, Kind, Lock, Lost, Previous, State};
+pub use lock::{Acquire, Kind, Lock, Lost, Previous, State, Wait};
 pub use maintenance::{Maintenance, ResetUsersReport};
+pub use primitive::{
+    Attach, AttachBlocking, MutexPrimitive, Primitive, ReadLockPrimitive, SemaphorePrimitive,
+    WriteLockPrimitive,
+};

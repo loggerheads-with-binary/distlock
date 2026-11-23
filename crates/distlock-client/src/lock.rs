@@ -108,15 +108,50 @@ pub struct Previous {
     pub age: Duration,
 }
 
+/// How long a request may wait.
+///
+/// `Default` (what a request starts with) defers to the [process-wide defaults](crate::defaults),
+/// and from there to "as long as the server allows", which is what waiting meant before defaults
+/// existed. `Forever` asks for that explicitly, so it beats a default that was set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Wait {
+    /// Not specified: use the [defaults](crate::defaults).
+    #[default]
+    Default,
+    /// As long as the server allows, whatever the defaults say.
+    Forever,
+    /// At most this long. `Duration::ZERO` does not wait.
+    For(Duration),
+}
+
+impl Wait {
+    /// The wait to use, asking `fallback` (the cascade of defaults) only if none was given.
+    pub(crate) fn resolve(self, fallback: impl FnOnce() -> Option<Duration>) -> Option<Duration> {
+        match self {
+            Wait::Default => fallback(),
+            Wait::Forever => None,
+            Wait::For(d) => Some(d),
+        }
+    }
+}
+
+impl From<Duration> for Wait {
+    fn from(d: Duration) -> Self {
+        Wait::For(d)
+    }
+}
+
 /// A request for a lock.
 #[derive(Debug, Clone)]
 pub struct Acquire {
     pub name: String,
     pub kind: Kind,
-    /// Lease length (kept alive automatically while the [`Lock`] lives). `None`: the client's `default_ttl`.
+    /// Lease length (kept alive automatically while the [`Lock`] lives). `None`: the
+    /// [defaults](crate::defaults) for this kind of lock, and then the client's `default_ttl`.
     pub ttl: Option<Duration>,
-    /// How long to wait. `None`: as long as the server allows. `Some(0)`: do not wait.
-    pub wait: Option<Duration>,
+    /// How long to wait; see [`Wait`]. Left alone, the [defaults](crate::defaults) apply, and with
+    /// none set that is as long as the server allows. `Wait::For(Duration::ZERO)`: do not wait.
+    pub wait: Wait,
     /// Overrides the client's namespace. `Some("")` means no namespace at all.
     pub namespace: Option<String>,
 }
@@ -127,7 +162,7 @@ impl Acquire {
             name: name.into(),
             kind,
             ttl: None,
-            wait: None,
+            wait: Wait::Default,
             namespace: None,
         }
     }
@@ -154,7 +189,13 @@ impl Acquire {
     }
 
     pub fn wait(mut self, wait: Duration) -> Self {
-        self.wait = Some(wait);
+        self.wait = Wait::For(wait);
+        self
+    }
+
+    /// Wait as long as the server allows, even if a shorter default wait has been set.
+    pub fn wait_forever(mut self) -> Self {
+        self.wait = Wait::Forever;
         self
     }
 

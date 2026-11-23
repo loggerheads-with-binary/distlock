@@ -26,9 +26,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::conn::{Conn, Io, REQUEST_TIMEOUT, Reader, Writer, tune_socket};
+use crate::defaults;
 use crate::error::{Error, Result};
 use crate::event::{EventSet, EventWait, Published, SetResult};
-use crate::lock::{Acquire, Kind, Lock, Previous, State, family_name, wire_name};
+use crate::lock::{Acquire, Kind, Lock, Previous, State, Wait, family_name, wire_name};
 use crate::maintenance::{Maintenance, protocol};
 use crate::tls::TlsSetup;
 
@@ -392,8 +393,9 @@ impl Client {
         }
     }
 
-    /// Wait for the lock. With `wait: None` this waits as long as the server allows; `Some(d)` at
-    /// most `d` (then [`Error::Timeout`]); `Some(0)` is a try-lock ([`Error::Busy`]).
+    /// Wait for the lock. Left alone (or `Wait::Forever`) this waits as long as the server allows;
+    /// `Wait::For(d)` at most `d` (then [`Error::Timeout`]); `Wait::For(0)` is a try-lock
+    /// ([`Error::Busy`]). Unspecified waits and lease lengths follow the [defaults](crate::defaults).
     pub async fn acquire(&self, a: Acquire) -> Result<Lock> {
         let req = self.inner.resolve(&a)?;
         let started = Instant::now();
@@ -415,7 +417,7 @@ impl Client {
 
     /// Like [`acquire`](Self::acquire) with zero wait: `Ok(None)` if the lock is taken.
     pub async fn try_acquire(&self, mut a: Acquire) -> Result<Option<Lock>> {
-        a.wait = Some(Duration::ZERO);
+        a.wait = Wait::For(Duration::ZERO);
         match self.acquire(a).await {
             Ok(lock) => Ok(Some(lock)),
             Err(Error::Busy) => Ok(None),
@@ -424,15 +426,17 @@ impl Client {
     }
 
     /// Wait for an event to be set; see [the module docs](crate::event). Returns what the set
-    /// carried. With `wait: None` this waits as long as the server allows; `Some(d)` at most `d`
-    /// (then [`Error::Timeout`]); `Some(0)` only checks whether the event is published right now.
+    /// carried. Left alone (or `Wait::Forever`) this waits as long as the server allows;
+    /// `Wait::For(d)` at most `d` (then [`Error::Timeout`]); `Wait::For(0)` only checks whether the
+    /// event is published right now. See [the defaults](crate::defaults).
     ///
     /// Dropping the future withdraws the wait from the server.
     pub async fn wait_event(&self, w: EventWait) -> Result<Published> {
         let wire = self
             .inner
             .event_wire_name(w.namespace.as_deref(), &w.name)?;
-        self.inner.event_wait(&wire, w.wait, w.after).await
+        let wait = w.wait.resolve(defaults::effective_event_wait);
+        self.inner.event_wait(&wire, wait, w.after).await
     }
 
     /// Set an event: wake every client waiting for it, and publish it for its window.
@@ -444,7 +448,8 @@ impl Client {
         let wire = self
             .inner
             .event_wire_name(s.namespace.as_deref(), &s.name)?;
-        self.inner.event_set(wire, s.value, s.publish_for).await
+        let publish_for = s.publish_for.or_else(defaults::effective_event_publish_for);
+        self.inner.event_set(wire, s.value, publish_for).await
     }
 
     /// Release every lock this session holds, end the session on the server, and stop the pool.
@@ -1109,7 +1114,10 @@ impl Inner {
                 "a semaphore needs capacity > 0 and 0 < permits <= capacity".into(),
             ));
         }
-        let ttl = a.ttl.unwrap_or(self.settings.default_ttl);
+        let ttl = a
+            .ttl
+            .or_else(|| defaults::effective_ttl(a.kind))
+            .unwrap_or(self.settings.default_ttl);
         if ttl.is_zero() {
             return Err(Error::InvalidArgument(
                 "ttl must be greater than zero".into(),
@@ -1129,7 +1137,7 @@ impl Inner {
             wire_name: wire_name(namespace, a.kind, &a.name),
             kind: a.kind,
             ttl,
-            wait: a.wait,
+            wait: a.wait.resolve(|| defaults::effective_wait(a.kind)),
         })
     }
 

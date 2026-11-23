@@ -9,11 +9,19 @@
             return
         ...
         guard.set_status(ProcessingStatus.SUCCEEDED)
+
+Primitives are client-less lock definitions that can be bound to any client, and
+:mod:`distlock.defaults` sets process-wide default ttl / wait values::
+
+    readers = ReadLockPrimitive("catalog", ttl=20)
+    async with readers.bind(client) as guard: ...
+    async with client.attach(readers) as guard: ...
 """
 
 from ._native import __version__
 from .client import DistLockClient
 from .enums import LockMode, PreviousStatus, ProcessingStatus
+from . import defaults
 from .errors import (
     AuthenticationError,
     ClientClosed,
@@ -33,6 +41,14 @@ from .errors import (
 from .event import Event
 from .lock import Lock, LockGuard
 from .maintenance import Maintenance, ResetUsersReport
+from .primitives import (
+    EventPrimitive,
+    MutexPrimitive,
+    Primitive,
+    ReadLockPrimitive,
+    SemaphorePrimitive,
+    WriteLockPrimitive,
+)
 from .keys import generate_keypair, public_key_for
 from .settings import ClientSettings
 from .stats import ProcessStats, ServerStats, SystemStats
@@ -46,6 +62,13 @@ __all__ = [
     "Lock",
     "LockGuard",
     "Event",
+    "defaults",
+    "Primitive",
+    "MutexPrimitive",
+    "ReadLockPrimitive",
+    "WriteLockPrimitive",
+    "SemaphorePrimitive",
+    "EventPrimitive",
     "LockMode",
     "ProcessingStatus",
     "PreviousStatus",

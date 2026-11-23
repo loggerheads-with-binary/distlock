@@ -8,11 +8,21 @@ from typing import Any, Optional, Union
 from pydantic import ValidationError
 
 from . import _native
+from ._unset import _UNSET
 from .enums import LockMode
 from .errors import ConfigError, translate
 from .event import Event as _Event
 from .lock import Lock, _acall, _call
 from .maintenance import Maintenance
+from .primitives import (
+    EventPrimitive,
+    MutexPrimitive,
+    Primitive,
+    ReadLockPrimitive,
+    SemaphorePrimitive,
+    WriteLockPrimitive,
+    check_primitive,
+)
 from .stats import ServerStats
 from .settings import ClientSettings, validation_message
 
@@ -163,6 +173,20 @@ class DistLockClient:
 
     # ------------------------------------------------------------------ making locks
 
+    def attach(self, primitive: Primitive) -> Any:
+        """Bind a primitive (see :mod:`distlock.primitives`) to this client: the client's side of
+        ``primitive.bind(client)``. The same primitive can be attached to any number of clients::
+
+            readers = ReadLockPrimitive("catalog", ttl=20)
+
+            async with client.attach(readers) as guard:
+                ...
+
+        Returns a :class:`Lock` for the lock primitives and an :class:`Event` for an
+        :class:`EventPrimitive`.
+        """
+        return check_primitive(primitive).bind(self)
+
     def Lock(
         self,
         name: str,
@@ -170,42 +194,44 @@ class DistLockClient:
         namespace: Optional[str] = None,
         mode: Union[LockMode, str] = LockMode.MUTEX,
         *,
-        wait: Optional[float] = None,
+        wait: Any = _UNSET,
     ) -> Lock:
         """A reusable lock called ``name``.
 
         :param ttl: lease length in seconds (renewed automatically while held); default: the
-            client's ``default_ttl``.
+            :mod:`~distlock.defaults` for the kind of lock, then the client's ``default_ttl``.
         :param namespace: overrides the client's namespace for this lock; ``""`` means none.
         :param mode: ``LockMode.MUTEX`` (default), ``READ`` or ``WRITE``.
-        :param wait: how long, in seconds, acquiring may wait: ``None`` (default) as long as the
-            server allows, ``0`` not at all.
+        :param wait: how long, in seconds, acquiring may wait: ``None`` as long as the server
+            allows, ``0`` not at all. Left out: the :mod:`~distlock.defaults`, and with none set,
+            as long as the server allows.
 
         Nothing is acquired until you enter the lock or call :meth:`Lock.acquire`.
         """
         mode = LockMode(mode)
-        return Lock(self._native, name, kind=mode.value, ttl=ttl, namespace=namespace, wait=wait)
+        cls = {LockMode.MUTEX: MutexPrimitive, LockMode.READ: ReadLockPrimitive, LockMode.WRITE: WriteLockPrimitive}[mode]
+        return cls(name, ttl, namespace, wait=wait).bind(self)
 
     def RLock(
-        self, name: str, ttl: Optional[float] = None, namespace: Optional[str] = None, *, wait: Optional[float] = None
+        self, name: str, ttl: Optional[float] = None, namespace: Optional[str] = None, *, wait: Any = _UNSET
     ) -> Lock:
         """The shared (reader) side of the read/write lock ``name``: many readers at once, but never
         alongside a writer."""
-        return self.Lock(name, ttl, namespace, LockMode.READ, wait=wait)
+        return ReadLockPrimitive(name, ttl, namespace, wait=wait).bind(self)
 
     def WLock(
-        self, name: str, ttl: Optional[float] = None, namespace: Optional[str] = None, *, wait: Optional[float] = None
+        self, name: str, ttl: Optional[float] = None, namespace: Optional[str] = None, *, wait: Any = _UNSET
     ) -> Lock:
         """The exclusive (writer) side of the read/write lock ``name``: blocks, and is blocked by,
         every reader and every other writer of that name."""
-        return self.Lock(name, ttl, namespace, LockMode.WRITE, wait=wait)
+        return WriteLockPrimitive(name, ttl, namespace, wait=wait).bind(self)
 
     def Mutex(
-        self, name: str, ttl: Optional[float] = None, namespace: Optional[str] = None, *, wait: Optional[float] = None
+        self, name: str, ttl: Optional[float] = None, namespace: Optional[str] = None, *, wait: Any = _UNSET
     ) -> Lock:
         """A plain exclusive lock. Mutexes are a separate space from read/write locks: a mutex and
         an RLock/WLock with the same name do not conflict."""
-        return self.Lock(name, ttl, namespace, LockMode.MUTEX, wait=wait)
+        return MutexPrimitive(name, ttl, namespace, wait=wait).bind(self)
 
     def Semaphore(
         self,
@@ -215,7 +241,7 @@ class DistLockClient:
         ttl: Optional[float] = None,
         namespace: Optional[str] = None,
         *,
-        wait: Optional[float] = None,
+        wait: Any = _UNSET,
     ) -> Lock:
         """At most ``capacity`` holders at a time (each holding ``permits``).
 
@@ -223,20 +249,7 @@ class DistLockClient:
         disappears once its last holder and waiter are gone, so a redeployed application can start
         over with a different capacity.
         """
-        if not isinstance(capacity, int) or capacity < 1:
-            raise ConfigError("capacity must be a positive integer")
-        if not isinstance(permits, int) or not 1 <= permits <= capacity:
-            raise ConfigError("permits must be between 1 and the capacity")
-        return Lock(
-            self._native,
-            name,
-            kind="semaphore",
-            ttl=ttl,
-            namespace=namespace,
-            wait=wait,
-            capacity=capacity,
-            permits=permits,
-        )
+        return SemaphorePrimitive(name, capacity, permits, ttl, namespace, wait=wait).bind(self)
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -245,8 +258,8 @@ class DistLockClient:
         name: str,
         *,
         namespace: Optional[str] = None,
-        timeout: Optional[float] = None,
-        publish_for: Optional[float] = None,
+        timeout: Any = _UNSET,
+        publish_for: Any = _UNSET,
     ) -> _Event:
         """A named broadcast, like :class:`asyncio.Event` with a limited memory::
 
@@ -255,15 +268,16 @@ class DistLockClient:
 
         :param namespace: overrides the client's namespace; ``""`` means none.
         :param timeout: how long :meth:`Event.wait` waits by default: ``None`` as long as the server
-            allows, ``0`` only checks.
+            allows, ``0`` only checks. Left out: the :mod:`~distlock.defaults`, and with none set, as
+            long as the server allows.
         :param publish_for: default publish window of :meth:`Event.set`, in seconds: how long after a
-            set a late waiter is still answered at once. ``None``: the server's default.
+            set a late waiter is still answered at once. ``None`` (or left out, with no default set):
+            the server's default.
 
         Events live apart from locks: an event and a lock with the same name do not interact.
         Nothing happens on the server until you wait or set. See :class:`Event`.
         """
-        return _Event(self._native, name, namespace=namespace, timeout=timeout, publish_for=publish_for)
-
+        return EventPrimitive(name, namespace=namespace, timeout=timeout, publish_for=publish_for).bind(self)
 
     async def connect(self) -> None:
         """Connect now instead of on first use (to fail fast on bad credentials)."""

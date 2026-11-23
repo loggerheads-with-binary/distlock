@@ -40,13 +40,16 @@ use std::time::Duration;
 
 use distlock_proto::v1 as pb;
 
+use crate::lock::Wait;
+
 /// A request to wait for an event.
 #[derive(Debug, Clone)]
 pub struct EventWait {
     pub name: String,
-    /// How long to wait. `None`: as long as the server allows. `Some(0)`: do not wait; succeeds only
-    /// if the event is inside its publish window right now.
-    pub wait: Option<Duration>,
+    /// How long to wait; see [`Wait`]. Left alone, the [defaults](crate::defaults) apply, and with
+    /// none set that is as long as the server allows. `Wait::For(Duration::ZERO)`: do not wait;
+    /// succeeds only if the event is inside its publish window right now.
+    pub wait: Wait,
     /// Only a publication with an id greater than this ends the wait at once. Pass
     /// [`Published::id`] of the last publication handled, to skip it while it is still published.
     pub after: u64,
@@ -58,14 +61,20 @@ impl EventWait {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            wait: None,
+            wait: Wait::Default,
             after: 0,
             namespace: None,
         }
     }
 
     pub fn wait(mut self, wait: Duration) -> Self {
-        self.wait = Some(wait);
+        self.wait = Wait::For(wait);
+        self
+    }
+
+    /// Wait as long as the server allows, even if a shorter default wait has been set.
+    pub fn wait_forever(mut self) -> Self {
+        self.wait = Wait::Forever;
         self
     }
 
@@ -86,8 +95,8 @@ pub struct EventSet {
     pub name: String,
     /// Delivered to every waiter. Capped in size by the server.
     pub value: Option<String>,
-    /// How long after this set the event stays published for late waiters. `None`: the server's
-    /// default. `Some(0)`: wake only the clients waiting now. The server caps long windows.
+    /// How long after this set the event stays published for late waiters. `None`: the
+    /// [default](crate::defaults::set_default_event_publish_for) if one is set, else the server's. `Some(0)`: wake only the clients waiting now. The server caps long windows.
     pub publish_for: Option<Duration>,
     /// Overrides the client's namespace. `Some("")` means no namespace at all.
     pub namespace: Option<String>,

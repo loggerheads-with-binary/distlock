@@ -51,6 +51,37 @@ The server is [`distlock-server`](https://crates.io/crates/distlock-server). Pyt
 
 Licensed under the [MIT license](https://github.com/loggerheads-with-binary/distlock/blob/main/LICENSE).
 
+## Primitives and defaults
+
+A *primitive* (`MutexPrimitive`, `ReadLockPrimitive`, `WriteLockPrimitive`, `SemaphorePrimitive`; also
+`Acquire`, `EventWait` and `EventSet`) describes what you want without a client, so one definition can be
+bound again and again, to one client or to several. Bind it with `Primitive::bind`, or let the client
+attach it with `Attach::attach` (blanket-implemented for everything that is `AsRef<Client>`; the blocking
+client uses `AttachBlocking`):
+
+```rust
+use distlock_client::{Attach, Primitive, ReadLockPrimitive};
+
+let readers = ReadLockPrimitive::new("catalog").ttl(Duration::from_secs(20));
+let lock = readers.bind(&client).await?;
+let lock = other_client.attach(&readers).await?;
+```
+
+What a request leaves out follows the process-wide defaults in `distlock_client::defaults`, read when the
+request is made. They are lock-free atomics:
+
+```rust
+use distlock_client::defaults::{set_default_semaphore_wait, set_default_wait};
+
+set_default_wait(Some(Duration::from_secs(10)));            // locks and events
+set_default_semaphore_wait(Some(Duration::from_secs(60)));  // semaphores wait longer
+```
+
+A kind's default beats the general one, and the request's own value beats both. `Wait::Forever`
+(`.wait_forever()`) waits as long as the server allows even when a default is set; `reset_default_*()` and
+`reset_all()` forget defaults. Unset, nothing changes. `Acquire::wait` and `EventWait::wait` are now of
+type `Wait` (`Default`, `Forever`, `For(Duration)`); the `.wait(Duration)` builders are unchanged.
+
 ## TLS
 
 Set `tls: true` (or `?tls=true` in a URL) to connect over TLS to a server that has a certificate.
